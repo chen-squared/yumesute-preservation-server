@@ -1096,6 +1096,10 @@ def install(app):
     live_modes.install(app)
     import live_parity
     live_parity.install()
+    import live_finish
+    live_finish.install()
+    import things_compat
+    things_compat.install()
     import photo_preservation
     photo_preservation.install(app)
     import customization

@@ -61,6 +61,7 @@ async def start(request: Request):
             from progression import daily, context, rules
             await daily(s)
             r = parts(await call_bound(request, s, upstream.lives_start))
+            await s.conn.conn.execute('UPDATE active_live SET "isAutoPlay"=$2 WHERE "userId"=$1', s.uid, bool(p.is_auto_play))
             active = await s.conn.conn.fetchrow('SELECT * FROM active_live WHERE "userId"=$1',s.uid)
             music=master('music_master',chart.music_master_id)
             xp=int(music.stamina_consumption*max(1,p.stamina_consumption_ratio)*rules()['rank_xp_per_stamina']) if active['staminaSpent'] else 0
@@ -164,6 +165,12 @@ def install(app):
                 await conn.conn.execute('CREATE TABLE IF NOT EXISTS preservation_live_context ("userId" bigint PRIMARY KEY REFERENCES accounts("userId") ON DELETE CASCADE, mode text NOT NULL, "masterId" integer NOT NULL)')
                 await conn.conn.execute("ALTER TABLE preservation_live_context ADD COLUMN IF NOT EXISTS extra jsonb NOT NULL DEFAULT '{}'::jsonb")
                 await conn.conn.execute('CREATE TABLE IF NOT EXISTS preservation_course_run ("userId" bigint PRIMARY KEY REFERENCES accounts("userId") ON DELETE CASCADE, data jsonb NOT NULL)')
+                await conn.conn.execute('ALTER TABLE active_live ADD COLUMN IF NOT EXISTS "isAutoPlay" boolean NOT NULL DEFAULT false')
+                from things_compat import repair_dual_cards
+                async with conn.transaction():
+                    repaired = await repair_dual_cards(conn)
+                if repaired:
+                    print(f"Linked the second idol on {repaired} dual-idol card(s)", flush=True)
             yield
     app.router.lifespan_context = lifespan
     count = len(app.router.routes)
