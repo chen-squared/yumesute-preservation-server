@@ -168,7 +168,12 @@ async def rank_xp(s,amount):
     # a cap-up item arrives (State.announce_rank_cap).
     await s.update('User',row,playerRank=rank,currentRankPoint=balance,isCapedPlayerRank=rank>=cap)
     if restore:
-        await adjust_and_check_stamina(s.conn,s.uid,restore,rank)
+        # Clamp instead of the helper's strict default: a rank-up restore is larger than the
+        # gap to the new max whenever the player is not nearly empty, and strict mode then
+        # returns no row and drops the restore entirely. The C# reference server adds it
+        # unclamped; the overfill above max is not pinned down by captures, so the player
+        # simply ends at the new rank's maximum.
+        await adjust_and_check_stamina(s.conn,s.uid,restore,rank,auto_max_clamp=True)
         s.tables.pop('User',None);row=await s.one('User');s.dirty[('User',row['id'])]=row.copy()
     if rank!=before:
         for ident in (1000,1100):await mission_progress(s,ident,absolute=rank)
