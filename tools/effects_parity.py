@@ -438,6 +438,17 @@ def base_correction(effects: list) -> float:
     return sum_by_type(effects, EffectTypes.BaseCorrection, CalculationTypes.PercentageAddition) / 100.0
 
 
+def base_score_percentage(effects: list) -> int:
+    """LiveUnit.BaseScorePercentage: the party's passive BaseScoreUp (type 32) total in whole
+    percent. Effect values are stored in hundredths of a percent (800 -> 8%), and the client
+    field is an ``int`` (key9), matching the C# server's ``sum / 100`` conversion.
+    """
+    return int(
+        sum_by_type(effects, EffectTypes.BaseScoreUp, CalculationTypes.PercentageAddition)
+        / 100.0
+    )
+
+
 # Constants.Character: caps on the status/performance percent, raised by the matching *LimitUp.
 _STATUS_PERCENT_LIMIT = 20000
 _PERFORMANCE_PERCENT_LIMIT = 20000

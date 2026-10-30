@@ -7,6 +7,7 @@ from helpers.msgpack import respond, read_request, from_array, fault
 from helpers.live import build_live_time_event
 from helpers.live_result import play_totals
 from helpers.score import verify_score_blocks
+from live_parity import reset_auto_play, set_auto_play
 from models import StartLivePayload, FinishLivePayload, FinishLiveResult, ConcertResult
 from routes import lives as upstream
 from scripts._sirius import _unpack_all, _decompress
@@ -60,7 +61,11 @@ async def start(request: Request):
                 raise Rejected('Stage is locked')
             from progression import daily, context, rules
             await daily(s)
-            r = parts(await call_bound(request, s, upstream.lives_start))
+            token = set_auto_play(p.is_auto_play)
+            try:
+                r = parts(await call_bound(request, s, upstream.lives_start))
+            finally:
+                reset_auto_play(token)
             await s.conn.conn.execute('UPDATE active_live SET "isAutoPlay"=$2 WHERE "userId"=$1', s.uid, bool(p.is_auto_play))
             active = await s.conn.conn.fetchrow('SELECT * FROM active_live WHERE "userId"=$1',s.uid)
             music=master('music_master',chart.music_master_id)

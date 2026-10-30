@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / 'vendor/server-of-dreams'))
 from effects_parity import (
     AppliedEffect,
     EffectSourceTypes,
+    base_score_percentage,
     base_stat_bonus,
     collect_slot_effects,
     component_flat_bonus,
@@ -18,11 +19,14 @@ from effects_parity import (
     performance_percent_bonuses_by_source,
 )
 from live_parity import (
+    _base_score_coefficient,
     _calculate_slot_status,
     _character_base_status,
+    _sense_score_factor,
+    _star_act_score_factor,
 )
 from models.entities import LiveStatus
-from models.enums import EffectTypes
+from models.enums import EffectTypes, MusicDifficulties
 
 
 class TestStatusCalculation(unittest.TestCase):
@@ -392,6 +396,73 @@ class TestStatusCalculation(unittest.TestCase):
         self.assertTrue(t0.event.is_star_act)
         self.assertEqual(t0.event.grant_sense_lights, init_lights)
         self.assertEqual(t0.event.acquirable_lights, init_lights)
+
+
+class TestLiveScoreFactors(unittest.TestCase):
+    def test_sense_score_factor_uses_sense_level(self):
+        # Sense 141050: base 170, +50 per level; level 5 -> 170 + 4*50 = 370 (percent).
+        sm = MagicMock()
+        sm.acquirable_score_percent = 170
+        sm.score_up_per_level = 50
+        self.assertEqual(_sense_score_factor(sm, 1), 170)
+        self.assertEqual(_sense_score_factor(sm, 5), 370)
+
+    def test_star_act_score_factor_uses_talent_stage(self):
+        # Star Act 141051: base 970, +100 per talent stage; stage 1 -> 970 + 1*100 = 1070.
+        sam = MagicMock()
+        sam.acquirable_score_percent = 970
+        sam.score_up_per_level = 100
+        self.assertEqual(_star_act_score_factor(sam, 0), 970)
+        self.assertEqual(_star_act_score_factor(sam, 1), 1070)
+        self.assertEqual(_star_act_score_factor(sam, 3), 1270)
+
+    def test_base_score_percentage_sums_party_effects(self):
+        from models.enums import CalculationTypes
+
+        def base_score_effect(value):
+            em = MagicMock()
+            em.type = EffectTypes.BaseScoreUp
+            em.calculation_type = CalculationTypes.PercentageAddition
+            detail = MagicMock()
+            detail.level = 10
+            detail.value = float(value)
+            em.details = [detail]
+            return AppliedEffect(em, 10, EffectSourceTypes.Accessory)
+
+        self.assertEqual(base_score_percentage([base_score_effect(800)]), 8)
+        self.assertEqual(
+            base_score_percentage([base_score_effect(350), base_score_effect(500)]), 8
+        )
+        # Non-BaseScoreUp effects do not contribute.
+        other = MagicMock()
+        other.type = EffectTypes.PerformanceUp
+        other.calculation_type = CalculationTypes.PercentageAddition
+        detail = MagicMock()
+        detail.level = 10
+        detail.value = 500.0
+        other.details = [detail]
+        self.assertEqual(
+            base_score_percentage(
+                [base_score_effect(800), AppliedEffect(other, 10)]
+            ),
+            8,
+        )
+
+    def test_base_score_coefficient_by_difficulty(self):
+        expectations = {
+            MusicDifficulties.Normal: 0.95,
+            MusicDifficulties.Hard: 0.97,
+            MusicDifficulties.Extra: 1.0,
+            MusicDifficulties.Stella: 1.05,
+            MusicDifficulties.Olivier: 1.05,
+        }
+        for difficulty, expected in expectations.items():
+            lm = MagicMock()
+            lm.difficulty = difficulty
+            self.assertEqual(_base_score_coefficient(lm), expected)
+        lm = MagicMock()
+        lm.difficulty = MusicDifficulties.Stella
+        self.assertEqual(_base_score_coefficient(lm, auto=True), 0.0)
 
 
 if __name__ == "__main__":

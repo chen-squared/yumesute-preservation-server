@@ -8,8 +8,11 @@
   DecreaseRequire*Light reductions to the leader's requirements, and fires an opening Star Act
   at timing_seconds = 0 if conditions are met.
 - Normal live sense timings: 8 windows spread evenly over song duration (1-2-3-4-5-3-2-1 formation).
+- Scoring fields: sense/star-act factors include level scaling, BaseScorePercentage sums the
+  party's BaseScoreUp passives, and the base-score coefficient follows the chart difficulty.
 """
 
+import contextvars
 import random
 from typing import Optional
 
@@ -29,6 +32,7 @@ from effects_parity import (
     added_lights,
     album_effects,
     base_correction,
+    base_score_percentage,
     base_stat_bonus,
     bloom_effects,
     circle_effects,
@@ -76,6 +80,58 @@ def _lights(sense_type, count: int) -> list:
         return [SenseLightTypes(int(sense_type))] * max(0, count)
     except ValueError:
         return []
+
+
+# Auto play is part of the StartLive payload, but the upstream route builds the unit before
+# the local wrapper sees the request. The wrapper sets this flag around the upstream call.
+_AUTO_PLAY = contextvars.ContextVar("yumesute_live_auto_play", default=False)
+
+
+def set_auto_play(value: bool):
+    """Mark the current StartLive call as auto (returns a token for reset_auto_play)."""
+    return _AUTO_PLAY.set(bool(value))
+
+
+def reset_auto_play(token) -> None:
+    _AUTO_PLAY.reset(token)
+
+
+def _sense_score_factor(sense_master, sense_level: int) -> int:
+    """Resolved ``SenseEffect.ScoreFactor`` (percent): base + (sense level - 1) * per-level.
+    The client divides this integer by 100 (SenseData.scoreUp)."""
+    base = int(getattr(sense_master, "acquirable_score_percent", 0) or 0)
+    per_level = int(getattr(sense_master, "score_up_per_level", 0) or 0)
+    return base + max(0, int(sense_level or 0) - 1) * per_level
+
+
+def _star_act_score_factor(star_act_master, talent_stage: int) -> int:
+    """Resolved ``StarAct.ScoreFactor`` (percent): base + talent stage * per-level.
+    The client divides this integer by 100 (StarActData.scoreUp)."""
+    base = int(getattr(star_act_master, "acquirable_score_percent", 0) or 0)
+    per_level = int(getattr(star_act_master, "score_up_per_level", 0) or 0)
+    return base + max(0, int(talent_stage or 0)) * per_level
+
+
+_BASE_SCORE_COEFFICIENTS = {
+    int(MusicDifficulties.Normal): 0.95,
+    int(MusicDifficulties.Hard): 0.97,
+    int(MusicDifficulties.Extra): 1.0,
+    # The client calculator groups STELLA and OLIVIER in one category and uses 1.05.
+    int(MusicDifficulties.Stella): 1.05,
+    int(MusicDifficulties.Olivier): 1.05,
+}
+
+
+def _base_score_coefficient(live_master, auto: bool = False) -> float:
+    """LiveUnit.BaseScoreDifficultyAutoCoefficient (key10, double).
+
+    Manual Normal/Hard use 0.95/0.97; the client calculator uses 1.0 for Extra and 1.05 for
+    STELLA/OLIVIER. Auto play carries a zero coefficient (base note score disabled).
+    """
+    if auto:
+        return 0.0
+    difficulty = int(live_master.difficulty) if live_master is not None else 0
+    return _BASE_SCORE_COEFFICIENTS.get(difficulty, 1.0)
 
 
 _STATUS_LEVEL: dict = {}
@@ -529,9 +585,13 @@ async def build_live_unit(conn, user_id: int, party_id: int, live_master_id: int
 
     # MaxPrincipal = base + the party's passive PrincipalGaugeLimitUp effects (each counted once:
     # party-wide All-range + every slot's own effects).
-    principal_max = max_principal(
-        party_all + [e for effs in slot_effects.values() for e in range_split(effs)[0]]
-    )
+    passive_party = party_all + [
+        e for effs in slot_effects.values() for e in range_split(effs)[0]
+    ]
+    principal_max = max_principal(passive_party)
+    # BaseScoreUp is a party-wide passive: accessories, posters, bloom, album and leader sense
+    # each contribute once. The client field is a whole percentage (effect value 800 -> 8).
+    base_pct = base_score_percentage(passive_party)
 
     actors: dict = {}
     senses: list = []
@@ -624,7 +684,11 @@ async def build_live_unit(conn, user_id: int, party_id: int, live_master_id: int
                         _lights(sm.type, sm.light_count) + added_lights(effects, sm.type)
                     ),
                     sense_effect=SenseEffect(
-                        score_factor=0 if cancel_sense else sm.acquirable_score_percent,
+                        score_factor=(
+                            0
+                            if cancel_sense
+                            else _sense_score_factor(sm, ch.senseLevel)
+                        ),
                         principal=0,
                         branch_condition=int(sm.branch_condition1),
                     ),
@@ -638,7 +702,7 @@ async def build_live_unit(conn, user_id: int, party_id: int, live_master_id: int
             slot.position == leader_position and sam is not None
         ):  # leader drives the star act
             star_act = StarAct(
-                score_factor=sam.acquirable_score_percent,
+                score_factor=_star_act_score_factor(sam, ch.talentStage),
                 actor_id=ch.id,
                 branch_condition=int(sam.branch_condition1),
             )
@@ -720,10 +784,10 @@ async def build_live_unit(conn, user_id: int, party_id: int, live_master_id: int
         total_status=total_status,
         star_act_sense_light_count=star_act_sense_light_count,
         max_principal=principal_max,
-        # base_score_difficulty_auto_coefficient: per-difficulty, server-set (tutorial 0.95).
-        # Alternative seen elsewhere -- COULD BE ACCURATE, NEEDS CHECKING:
-        #   1.05 when live_master_id % 10 == 4, else 1.0
-        base_score_difficulty_auto_coefficient=0.95,
+        base_score_percentage=base_pct,
+        base_score_difficulty_auto_coefficient=_base_score_coefficient(
+            lm, auto=_AUTO_PLAY.get()
+        ),
         is_first_play_olivier=is_first_olivier,
         u_active_live_id=live_id,
     )
