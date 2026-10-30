@@ -29,6 +29,7 @@ from helpers.episodes import (
     _local_meta,
 )
 from models import BulkLevelUpPayload, BooleanResult, StarPointResult, UseExperienceItemsPayload
+from models.enums import ThingTypes
 from models.unions import IDATA_OBJECT_KEY
 from db import user as queries
 
@@ -41,6 +42,11 @@ class Rejected(Exception):
 
 class NotEnough(Rejected):
     pass
+
+
+# ItemMaster 610001 "プレイヤーランク上限UP": 上限が1上昇する。Audition phase 2 grants one
+# per audition; releasing them is what raises User.playerRankLimit above the initial 50.
+RANK_CAP_ITEM = 610001
 
 
 def master(table, ident, field="id_"):
@@ -150,7 +156,28 @@ class State:
             for row in await self.rows(name):
                 if before.get(row["id"]) != row:
                     self.dirty[(name, row[self.key_field(name)])] = row.copy()
+        if any(
+            kind == int(ThingTypes.Item) and ident == RANK_CAP_ITEM
+            for kind, ident, _ in things
+        ):
+            await self.announce_rank_cap()
         return result
+
+    async def announce_rank_cap(self):
+        """A cap-up item arrived while the rank is at its limit.
+
+        PlayerRankCapMaster and the Player routes never maintain these two User flags, so
+        they are set here: the rank state plus the one-shot prompt the client clears through
+        Player/UpdateCapedPlayerRankAnnounce.
+        """
+        user = await self.one("User")
+        if user and is_rank_capped(user):
+            await self.update(
+                "User",
+                user,
+                isCapedPlayerRank=True,
+                requireCapedPlayerRankAnnounce=True,
+            )
 
     def present(self):
         return [
@@ -892,6 +919,126 @@ async def buy_chart(request: Request, mLiveId: int):
         return respond(BooleanResult())
 
 
+def max_released_rank():
+    # PlayerRankMaster.is_released_rank bounds the rank itself; the official FAQ's initial
+    # limit is 50 and the table runs to 300.
+    return max((x.rank for x in cache.player_rank_master if x.is_released_rank), default=1)
+
+
+def actor_level_cap(user):
+    # A character is bounded by the live player rank, by the ceiling that rank can reach
+    # (User.playerRankLimit), and by the levels CharacterLevelMaster has dated as released.
+    from helpers.character_level import released_max_level
+
+    return max(1, min(user["playerRank"], user["playerRankLimit"], released_max_level()))
+
+
+def is_rank_capped(user):
+    return user["playerRank"] >= min(user["playerRankLimit"], max_released_rank())
+
+
+def release_plan(limit, held, highest):
+    """(new limit, items consumed) for a cap release: every item raises the limit by one.
+
+    Audition phase 2 grants 250 of them (one per audition) and the initial limit is 50,
+    exactly the distance to the highest released rank of 300.
+    """
+    limit, held = int(limit), max(0, int(held))
+    released = min(limit + held, int(highest))
+    return released, max(0, released - limit)
+
+
+async def sync_rank_cap_state(s):
+    """Refresh the rank-cap flags, which the pinned upstream never maintains.
+
+    The announce flag is only raised on the transition into the capped state and only when
+    the account actually holds a cap-up item, so a login re-flags an imported save that
+    predates this server once, and does not nag afterwards.
+    """
+    user = await s.one("User")
+    if not user:
+        return
+    capped = is_rank_capped(user)
+    if capped == user["isCapedPlayerRank"]:
+        return
+    item = await s.one("Item", itemMasterId=RANK_CAP_ITEM)
+    await s.update(
+        "User",
+        user,
+        isCapedPlayerRank=capped,
+        requireCapedPlayerRankAnnounce=capped and bool(item and item["stock"] > 0),
+    )
+
+
+async def cash_level_banks(s, user):
+    """Turn banked Character.currentExperience into levels once the cap has risen.
+
+    Exp earned at a capped level is kept rather than dropped, so an un-cap applies it with
+    zero gained exp (the same assumption helpers.character_level.apply_experience documents).
+    """
+    cap = actor_level_cap(user)
+    for row in await s.rows("Character"):
+        cm = character_master(row["characterMasterId"]) if row["level"] < cap else None
+        if cm is None:
+            continue
+        level, experience = actor_experience(
+            row["level"], row["currentExperience"], 0, cap, cm.rarity
+        )
+        delta = level - row["level"]
+        if delta <= 0:
+            continue
+        await s.update("Character", row, level=level, currentExperience=experience)
+        await level_missions(s, cm, delta, level)
+
+
+@router.post("/api/Player/ReleasePlayerRankCap")
+async def release_rank_cap(request: Request):
+    # No payload and no quantity: the account's whole stock of cap-up items is spent, the
+    # rank limit rises by that amount, and both the banked rank EXP and the banked actor EXP
+    # are cashed against the new ceiling.
+    from progression import rank_xp
+
+    try:
+        async with transaction(request) as s:
+            user = await s.one("User")
+            if not user:
+                raise Rejected()
+            item = await s.one("Item", itemMasterId=RANK_CAP_ITEM)
+            held = item["stock"] if item else 0
+            if held <= 0:
+                raise NotEnough()
+            limit, spent = release_plan(user["playerRankLimit"], held, max_released_rank())
+            if spent <= 0:
+                raise Rejected()  # the limit already sits at the released maximum
+            await s.pay({RANK_CAP_ITEM: spent})
+            await s.update(
+                "User",
+                user,
+                playerRankLimit=limit,
+                isCapedPlayerRank=False,
+                requireCapedPlayerRankAnnounce=False,
+            )
+            await rank_xp(s, 0)
+            await cash_level_banks(s, await s.one("User"))
+        return respond(BooleanResult(is_success=True), present=s.present())
+    except NotEnough:
+        return respond(BooleanResult(), faults=[fault("NotEnoughThing")])
+    except Rejected:
+        return respond(BooleanResult(), faults=[fault("InvalidRequest")])
+
+
+@router.post("/api/Player/UpdateCapedPlayerRankAnnounce")
+async def clear_rank_cap_announce(request: Request):
+    try:
+        async with transaction(request) as s:
+            user = await s.one("User")
+            if user and user["requireCapedPlayerRankAnnounce"]:
+                await s.update("User", user, requireCapedPlayerRankAnnounce=False)
+        return respond(BooleanResult(is_success=True), present=s.present())
+    except Rejected:
+        return respond(BooleanResult(), faults=[fault("InvalidRequest")])
+
+
 def actor_item_experience(costs, bonus):
     # Official one/two-item captures round each item before multiplying quantity.
     return sum(n * math.floor(experience_item(i).acquirable_experience * (1 + bonus / 100)) for i, n in costs.items())
@@ -981,9 +1128,7 @@ async def actor_level(request: Request, characterId: int):
             if not row or not user or not bonus:
                 raise Rejected()
             cm = character_master(row["characterMasterId"])
-            from helpers.character_level import released_max_level
-
-            cap = min(user["playerRank"], released_max_level())
+            cap = actor_level_cap(user)
             if row["level"] >= cap:
                 raise Rejected()
             gained = actor_item_experience(costs, bonus["experienceBonus"])
@@ -1006,10 +1151,25 @@ async def actor_level(request: Request, characterId: int):
         return respond(BooleanResult(), faults=[fault("InvalidRequest")])
 
 
+def bulk_step(stock, row, cap, bonus, rarity):
+    """One actor's bulk level-up step: (items to spend, level, banked EXP, EXP still short).
+
+    The pool is only priced when EXP is missing: banked EXP can already cover the levels a
+    cap release just unlocked, and skipping those characters is what made a released cap look
+    like it did nothing.
+    """
+    need = experience_to_reach_for(row["level"], row["currentExperience"], cap, rarity)
+    spend = spend_experience_pool(stock, need, bonus) if need > 0 else {}
+    gained = actor_item_experience(spend, bonus)
+    level, experience = actor_experience(
+        row["level"], row["currentExperience"], gained, cap, rarity
+    )
+    return spend, level, experience, need
+
+
 @router.post("/api/Characters/BulkLevelUp")
 async def bulk_level(request: Request):
     from helpers.msgpack import read_request_list
-    from helpers.character_level import released_max_level
 
     try:
         payloads = await read_request_list(request, BulkLevelUpPayload)
@@ -1020,7 +1180,7 @@ async def bulk_level(request: Request):
             bonus = await s.one("UserBonus")
             if not user or not bonus:
                 raise Rejected()
-            cap = min(user["playerRank"], released_max_level())
+            cap = actor_level_cap(user)
             characters = {r["id"]: r for r in await s.rows("Character")}
             stock = {
                 r["itemMasterId"]: r["stock"]
@@ -1028,6 +1188,7 @@ async def bulk_level(request: Request):
                 if experience_item(r["itemMasterId"])
             }
             spent = {}
+            levels = 0
             needed_any = False
             for entry in sorted(payloads, key=lambda p: p.order):
                 row = characters.get(entry.character_id)
@@ -1036,28 +1197,20 @@ async def bulk_level(request: Request):
                 cm = character_master(row["characterMasterId"])
                 if cm is None:
                     continue
-                need = experience_to_reach_for(
-                    row["level"], row["currentExperience"], cap, cm.rarity
+                spend, level, exp, need = bulk_step(
+                    stock, row, cap, bonus["experienceBonus"], cm.rarity
                 )
-                if need <= 0:
-                    continue
-                needed_any = True
-                spend = spend_experience_pool(stock, need, bonus["experienceBonus"])
-                if not spend:
-                    continue
-                gained = actor_item_experience(spend, bonus["experienceBonus"])
-                if gained <= 0:
+                delta = level - row["level"]
+                if delta <= 0:
+                    needed_any = needed_any or need > 0
                     continue
                 for ident, quantity in spend.items():
                     stock[ident] -= quantity
                     spent[ident] = spent.get(ident, 0) + quantity
-                level, exp = actor_experience(
-                    row["level"], row["currentExperience"], gained, cap, cm.rarity
-                )
-                delta = level - row["level"]
                 await s.update("Character", row, level=level, currentExperience=exp)
                 await level_missions(s, cm, delta, level)
-            if not spent:
+                levels += delta
+            if not spent and not levels:
                 return respond(
                     BooleanResult(),
                     faults=[

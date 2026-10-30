@@ -6,7 +6,7 @@ explicit preservation policy, not a claimed reverse engineering of all modifiers
 import json,math,random,time
 from pathlib import Path
 from fastapi import APIRouter,Request
-from gameplay import State,Rejected,master,transaction,mission_progress,character_progress
+from gameplay import State,Rejected,master,transaction,mission_progress,character_progress,sync_rank_cap_state,max_released_rank
 from helpers.cache import cache
 from helpers.msgpack import respond,read_request,fault
 from helpers.daily import most_recent_reset
@@ -38,7 +38,10 @@ async def refresh_daily(app,uid):
     if uid is None:return
     async with app.acquire_db() as conn,conn.transaction():
         await conn.conn.execute('SELECT pg_advisory_xact_lock($1)',uid)
-        await daily(State(conn,uid))
+        s=State(conn,uid)
+        await daily(s)
+        # Rank-cap state is re-derived at login: imported saves never carried it.
+        await sync_rank_cap_state(s)
 
 async def context(s,mode,ident,extra):
     await s.conn.conn.execute('DELETE FROM preservation_live_context WHERE "userId"=$1',s.uid)
@@ -154,13 +157,16 @@ async def rank_xp(s,amount):
     row=await s.one('User');before=row['playerRank'];old=row['currentRankPoint'];stamina=row['currentStamina']
     rank=before;balance=old+amount
     levels={x.rank:x for x in cache.player_rank_master}
-    cap=min(row['playerRankLimit'],max(x.rank for x in cache.player_rank_master if x.is_released_rank))
+    cap=min(row['playerRankLimit'],max_released_rank())
     restore=0
     while rank<cap:
         m=levels.get(rank)
         if not m or m.point_to_level_up<=0 or balance<m.point_to_level_up or rank+1 not in levels:break
         balance-=m.point_to_level_up;rank+=1;restore+=max_stamina(rank)
-    await s.update('User',row,playerRank=rank,currentRankPoint=balance)
+    # isCapedPlayerRank is the rank-at-limit state the client's cap-release UI reads; nothing
+    # in the pinned upstream maintains it. The announce flag is separate and only raised when
+    # a cap-up item arrives (State.announce_rank_cap).
+    await s.update('User',row,playerRank=rank,currentRankPoint=balance,isCapedPlayerRank=rank>=cap)
     if restore:
         await adjust_and_check_stamina(s.conn,s.uid,restore,rank)
         s.tables.pop('User',None);row=await s.one('User');s.dirty[('User',row['id'])]=row.copy()
@@ -294,8 +300,9 @@ async def finish_context(s,context,p,result):
 
 
 def install(app):
-    import routes.login,helpers.daily
+    import routes.login,routes.data,helpers.daily
     routes.login.refresh_daily_limits=refresh_daily
+    routes.data.refresh_daily_limits=refresh_daily
     helpers.daily.refresh_daily_limits=refresh_daily
     n=len(app.router.routes);app.include_router(router)
     app.router.routes[:]=app.router.routes[n:]+app.router.routes[:n]
