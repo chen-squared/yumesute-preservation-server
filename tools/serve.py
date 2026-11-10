@@ -11,6 +11,8 @@ sys.path.insert(0, str(ROOT/'vendor/server-of-dreams'))
 from app import app
 from gameplay import install
 install(app)
+from coin_audit import install as install_coin_audit
+install_coin_audit(app)
 from live_drop_windows import install as install_drop_windows
 install_drop_windows()
 from fastapi import APIRouter, Request

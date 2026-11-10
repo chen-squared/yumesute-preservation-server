@@ -31,6 +31,7 @@ from helpers.episodes import (
 from models import BulkLevelUpPayload, BooleanResult, StarPointResult, UseExperienceItemsPayload
 from models.enums import ThingTypes
 from models.unions import IDATA_OBJECT_KEY
+from db import ExecutableQuery
 from db import user as queries
 
 router = APIRouter()
@@ -45,8 +46,13 @@ class NotEnough(Rejected):
 
 
 # ItemMaster 610001 "プレイヤーランク上限UP": 上限が1上昇する。Audition phase 2 grants one
-# per audition; releasing them is what raises User.playerRankLimit above the initial 50.
+# per audition and the server applies it on arrival (apply_cap_up_items); the separate
+# PlayerRankCapMaster purchase raises the limit by a whole block instead.
 RANK_CAP_ITEM = 610001
+
+# Player/ReleasePlayerRankCap pays PlayerRankCapMaster and lifts the limit by one block
+# (the release dialog's ランクキャップ 270 ▶ 280).
+CAP_RELEASE_STEP = 10
 
 
 def master(table, ident, field="id_"):
@@ -95,11 +101,14 @@ class State:
             return
         pk = self.key_field(entity)
         columns = ", ".join(f'"{k}"=${i + 3}' for i, k in enumerate(values))
-        await self.conn.conn.execute(
-            f'UPDATE "{_table(entity)}" SET {columns} WHERE "userId"=$1 AND "{pk}"=$2',
-            self.uid,
-            row[pk],
-            *values.values(),
+        # Through the connection wrapper, so coin writes also reach the local audit log.
+        await self.conn.execute(
+            ExecutableQuery(
+                f'UPDATE "{_table(entity)}" SET {columns} WHERE "userId"=$1 AND "{pk}"=$2',
+                self.uid,
+                row[pk],
+                *values.values(),
+            )
         )
         row.update(values)
         self.dirty[(entity, row[self.key_field(entity)])] = row.copy()
@@ -160,24 +169,15 @@ class State:
             kind == int(ThingTypes.Item) and ident == RANK_CAP_ITEM
             for kind, ident, _ in things
         ):
+            await apply_cap_up_items(self)
             await self.announce_rank_cap()
         return result
 
     async def announce_rank_cap(self):
-        """A cap-up item arrived while the rank is at its limit.
-
-        PlayerRankCapMaster and the Player routes never maintain these two User flags, so
-        they are set here: the rank state plus the one-shot prompt the client clears through
-        Player/UpdateCapedPlayerRankAnnounce.
-        """
+        """Refresh the cap flags after a cap-up item or a purchased release."""
         user = await self.one("User")
-        if user and is_rank_capped(user):
-            await self.update(
-                "User",
-                user,
-                isCapedPlayerRank=True,
-                requireCapedPlayerRankAnnounce=True,
-            )
+        if user:
+            await sync_cap_flags(self, user)
 
     def present(self):
         return [
@@ -938,7 +938,7 @@ def is_rank_capped(user):
 
 
 def release_plan(limit, held, highest):
-    """(new limit, items consumed) for a cap release: every item raises the limit by one.
+    """(new limit, items consumed) for cap-up items: every item raises the limit by one.
 
     Audition phase 2 grants 250 of them (one per audition) and the initial limit is 50,
     exactly the distance to the highest released rank of 300.
@@ -948,26 +948,76 @@ def release_plan(limit, held, highest):
     return released, max(0, released - limit)
 
 
-async def sync_rank_cap_state(s):
-    """Refresh the rank-cap flags, which the pinned upstream never maintains.
+def cap_release_cost(limit):
+    """(coin, {item: quantity}, new limit) for the purchased release, or None.
 
-    The announce flag is only raised on the transition into the capped state and only when
-    the account actually holds a cap-up item, so a login re-flags an imported save that
-    predates this server once, and does not nag afterwards.
+    PlayerRankMaster carries player_rank_cap_master_id on ranks 160..290 in tens, and the
+    client's helper reads that row (PlayerRankCapReleaseHepler.CheckReleaseCap returns a
+    PlayerRankCapMaster). The release dialog on the live save reads the row of the *current*
+    limit: at 270 it asks for 130022 x72000 + 130032 x16000 and takes the coin line from
+    278317545 to 110317545, exactly PlayerRankCapMaster id 12 (rank 270's row), and shows
+    the limit going to 280.
     """
+    row = master("player_rank_master", int(limit), field="rank")
+    cap_id = getattr(row, "player_rank_cap_master_id", None) if row else None
+    cost = master("player_rank_cap_master", cap_id) if cap_id else None
+    if cost is None:
+        return None
+    raised = min(int(limit) + CAP_RELEASE_STEP, max_released_rank())
+    if raised <= int(limit):
+        return None
+    return int(cost.coin), {d.item_master_id: int(d.quantity) for d in cost.details or []}, raised
+
+
+async def apply_cap_up_items(s):
+    """Spend every cap-up item the account holds, lifting the limit one rank each.
+
+    Nothing in the client can spend item 610001 - ApiClient offers only the payload-less
+    Player/ReleasePlayerRankCap, which PlayerRankCapReleaseHepler uses for the purchased
+    release - and the recovered official account ends at 219 phase-2 audition clears with no
+    610001 row at all and a limit of exactly 50 + 219, so the grant is applied on arrival.
+    """
+    item = await s.one("Item", itemMasterId=RANK_CAP_ITEM)
+    held = item["stock"] if item else 0
     user = await s.one("User")
-    if not user:
-        return
+    if not user or held <= 0:
+        return 0
+    limit, spent = release_plan(user["playerRankLimit"], held, max_released_rank())
+    if spent <= 0:
+        return 0
+    if item["stock"] > 0:
+        await s.update("Item", item, stock=item["stock"] - min(item["stock"], spent))
+    await s.update("User", user, playerRankLimit=limit)
+    return spent
+
+
+async def sync_cap_flags(s, user):
+    """Set the rank-cap flags the pinned upstream never maintains.
+
+    The client gates its release dialog on them (IPlayerRankCapReleaseHepler.IsReleaseable,
+    cleared through Player/UpdateCapedPlayerRankAnnounce) and that dialog is the purchased
+    release, so the prompt is raised only on the transition into the capped state and only
+    when the current limit has a PlayerRankCapMaster row to buy.
+    """
     capped = is_rank_capped(user)
     if capped == user["isCapedPlayerRank"]:
         return
-    item = await s.one("Item", itemMasterId=RANK_CAP_ITEM)
     await s.update(
         "User",
         user,
         isCapedPlayerRank=capped,
-        requireCapedPlayerRankAnnounce=capped and bool(item and item["stock"] > 0),
+        requireCapedPlayerRankAnnounce=capped and cap_release_cost(user["playerRankLimit"]) is not None,
     )
+
+
+async def sync_rank_cap_state(s):
+    """Reconcile the cap state at login: apply any cap-up item, then refresh the flags."""
+    user = await s.one("User")
+    if not user:
+        return
+    if await apply_cap_up_items(s):
+        user = await s.one("User")
+    await sync_cap_flags(s, user)
 
 
 async def cash_level_banks(s, user):
@@ -993,9 +1043,10 @@ async def cash_level_banks(s, user):
 
 @router.post("/api/Player/ReleasePlayerRankCap")
 async def release_rank_cap(request: Request):
-    # No payload and no quantity: the account's whole stock of cap-up items is spent, the
-    # rank limit rises by that amount, and both the banked rank EXP and the banked actor EXP
-    # are cashed against the new ceiling.
+    # The client sends no payload at all (ApiClient.Player_ReleasePlayerRankCap()), so the
+    # purchase is entirely master-driven: pay the PlayerRankCapMaster cost of the current
+    # limit and the limit rises by one 10-rank block, then both the banked rank EXP and the
+    # banked actor EXP are cashed against the new ceiling.
     from progression import rank_xp
 
     try:
@@ -1003,14 +1054,11 @@ async def release_rank_cap(request: Request):
             user = await s.one("User")
             if not user:
                 raise Rejected()
-            item = await s.one("Item", itemMasterId=RANK_CAP_ITEM)
-            held = item["stock"] if item else 0
-            if held <= 0:
-                raise NotEnough()
-            limit, spent = release_plan(user["playerRankLimit"], held, max_released_rank())
-            if spent <= 0:
-                raise Rejected()  # the limit already sits at the released maximum
-            await s.pay({RANK_CAP_ITEM: spent})
+            cost = cap_release_cost(user["playerRankLimit"])
+            if cost is None:
+                raise Rejected()  # no PlayerRankCapMaster row at this limit
+            coin, items, limit = cost
+            await s.pay(items, coin)
             await s.update(
                 "User",
                 user,

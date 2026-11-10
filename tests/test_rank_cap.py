@@ -1,9 +1,19 @@
 """Player rank cap release and the actor level cap it gates.
 
-Master-data evidence: AuditionRewardPackageMaster grants item 610001 once per audition
-phase 2 (250 auditions), the official initial player rank limit is 50, and PlayerRankMaster
-releases ranks up to 300. Nothing in the pinned upstream raises User.playerRankLimit, so
-these checks pin the release arithmetic and the banked-EXP behaviour it unlocks.
+Two independent mechanisms, both master-driven:
+
+* AuditionRewardPackageMaster grants item 610001 once per audition phase 2 (250 auditions)
+  and the server applies it on arrival, +1 rank each. The client has no way to spend that
+  item (ApiClient only offers the payload-less Player/ReleasePlayerRankCap), and the
+  recovered official account ends with no 610001 row, 219 phase-2 clears, and a limit of
+  exactly 50 + 219.
+* PlayerRankMaster.player_rank_cap_master_id on ranks 160..290 (in tens) points at a
+  PlayerRankCapMaster purchase - coin plus two shards - that lifts the limit by a whole
+  10-rank block. That is the dialog the client shows (PlayerRankCapReleaseHepler ->
+  PlayerRankCapReleaseDialog), and its numbers are pinned below against a live capture.
+
+PlayerRankMaster releases ranks up to 300 and nothing in the pinned upstream maintains
+User.playerRankLimit, so these checks pin the arithmetic for both paths.
 """
 import sys
 import unittest
@@ -18,10 +28,12 @@ from helpers.cache import cache, load_master_data
 load_master_data()
 
 from gameplay import (
+    CAP_RELEASE_STEP,
     RANK_CAP_ITEM,
     actor_experience,
     actor_level_cap,
     bulk_step,
+    cap_release_cost,
     experience_to_reach_for,
     is_rank_capped,
     max_released_rank,
@@ -51,6 +63,23 @@ class TestMasterEvidence(unittest.TestCase):
         self.assertFalse(item.consumable)
         self.assertEqual(item.category, 61)
 
+    def test_purchasable_blocks_are_the_tens_from_160(self):
+        rows = {
+            r.rank: r.player_rank_cap_master_id
+            for r in cache.player_rank_master
+            if r.player_rank_cap_master_id
+        }
+        self.assertEqual(sorted(rows), list(range(160, 300, 10)))
+        self.assertEqual([rows[r] for r in range(160, 300, 10)], list(range(1, 15)))
+
+    def test_rank_270_purchase_matches_the_release_dialog(self):
+        # Live capture: ランクキャップ 270 > 280, 130022 338559/72000, 130032 95142/16000,
+        # coin 278317545 > 110317545.
+        coin, items, raised = cap_release_cost(270)
+        self.assertEqual((coin, items, raised), (168000000, {130022: 72000, 130032: 16000}, 280))
+        self.assertEqual(raised, 270 + CAP_RELEASE_STEP)
+        self.assertEqual(278317545 - coin, 110317545)
+
 
 class TestRelease(unittest.TestCase):
     def test_release_plan_spends_one_item_per_level(self):
@@ -59,6 +88,21 @@ class TestRelease(unittest.TestCase):
         self.assertEqual(release_plan(299, 5, 300), (300, 1))
         self.assertEqual(release_plan(300, 5, 300), (300, 0))
         self.assertEqual(release_plan(269, 0, 300), (269, 0))
+
+    def test_purchase_only_exists_on_a_blocked_limit(self):
+        # A limit that is not a block edge, or one already at the released maximum, has
+        # nothing to buy.
+        self.assertIsNone(cap_release_cost(1))
+        self.assertIsNone(cap_release_cost(150))
+        self.assertIsNone(cap_release_cost(269))
+        self.assertIsNone(cap_release_cost(271))
+        self.assertIsNone(cap_release_cost(max_released_rank()))
+
+    def test_purchase_raises_a_whole_block_and_stops_at_the_maximum(self):
+        self.assertEqual(cap_release_cost(160)[2], 170)
+        self.assertEqual(cap_release_cost(160)[1], {130021: 2000, 130031: 1000})
+        self.assertEqual(cap_release_cost(290)[2], 300)
+        self.assertEqual(cap_release_cost(290)[0], 726000000)
 
     def test_capped_state(self):
         self.assertTrue(is_rank_capped({"playerRank": 269, "playerRankLimit": 269}))
