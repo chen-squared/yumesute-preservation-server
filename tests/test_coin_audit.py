@@ -1,7 +1,11 @@
 """Coin audit detection: the three statements that can move currency.coin are caught,
-reward writes to other tables are not. SQL shapes come from db/user/create.py
+reward writes to other tables are not, and a caught statement is bracketed by the two
+balance reads that produce the log line. SQL shapes come from db/user/create.py
 (add_currency, upsert_currency) and the local State.update('Currency', ...).
 """
+import asyncio
+from contextlib import redirect_stdout
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -10,8 +14,20 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "vendor/server-of-dreams"))
 
-from coin_audit import movement, touches_coin
+from coin_audit import bracketed, movement, touches_coin
 from db.user import add_currency
+
+
+class FakeConn:
+    """Stands in for DBConnWrapper.conn: one account, one mutable balance."""
+
+    def __init__(self):
+        self.coin = 100
+        self.reads = 0
+
+    async def fetch(self, sql):
+        self.reads += 1
+        return [{"userId": 7, "coin": self.coin}]
 
 
 class TestCoinAudit(unittest.TestCase):
@@ -46,6 +62,32 @@ class TestCoinAudit(unittest.TestCase):
         self.assertEqual(list(movement({7: 100}, {7: 100})), [])
         # A balance that appears (or disappears) mid-request still counts as a write.
         self.assertEqual(list(movement({}, {9: 42})), [(9, None, 42)])
+
+    def test_coin_statement_is_bracketed_and_logged(self):
+        conn, out = FakeConn(), io.StringIO()
+        sql = add_currency(7, coin=250).sql
+
+        async def write():
+            conn.coin += 250
+            return "written"
+
+        with redirect_stdout(out):
+            result = asyncio.run(bracketed(conn, [sql], write))
+        self.assertEqual(result, "written")
+        self.assertEqual(conn.reads, 2)  # balance before and after
+        self.assertIn('coin-audit - uid=7 100 -> 350 delta=+250', out.getvalue())
+        self.assertIn('UPDATE "currency"', out.getvalue())
+
+    def test_other_statements_cost_nothing_extra(self):
+        conn = FakeConn()
+
+        async def write():
+            conn.coin += 1
+            return "written"
+
+        sql = 'UPDATE "item" SET "stock" = "stock" + $2 WHERE "userId" = $1'
+        self.assertEqual(asyncio.run(bracketed(conn, [sql], write)), "written")
+        self.assertEqual(conn.reads, 0)
 
 
 if __name__ == "__main__":
