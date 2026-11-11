@@ -28,6 +28,9 @@ def preserved_master():
     # The ladder windows that keep 演劇リーグ / トリプルキャスト running (see league_schedule).
     from league_schedule import extend_tables
     extend_tables(tables,changes)
+    # The weekly course editions that keep ウィークリーコース running past 2026-09-21 (course_schedule).
+    from course_schedule import extend_tables as extend_course_tables
+    extend_course_tables(tables,changes)
     body=pack(tables)
     return body,hashlib.sha256(body).hexdigest()[:16],changes
 

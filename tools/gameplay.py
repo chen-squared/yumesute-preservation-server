@@ -1394,3 +1394,6 @@ def install(app):
     # 毎日無料パック and the other free jewel-shop packs: their lineup, once per their cap.
     import jewel_shop
     jewel_shop.install(app)
+    # ウィークリーコース: the weekly ranking course past the archive, and the random chart draw.
+    import music_courses
+    music_courses.install(app)

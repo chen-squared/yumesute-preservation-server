@@ -99,3 +99,15 @@ claim compared against master, and the next-day and Monday reissue - after which
 open again and its period count restarts at 1. Recreate the clone before rerunning, and drop
 it afterwards. The conditions, cycle clocks, chains and shop caps are pinned by
 `test_missions.py` and `test_jewel_shop.py`, which read no database.
+
+`check_courses.py` requires a disposable clone named `yumesute_course_checks` made the same
+way, because the ウィークリーコース has to be played through against the saved course tickets
+and trophy inventory. It writes only to that clone: a full three-song attempt on the generated
+edition the client is shown this week, the attempt landing in `music_course_ranking` and
+reaching the client in the present blob, the rank band's trophy paid once across two attempts,
+the generated ローカル対抗 field checked against its seeded rates,
+`Lives/SelectMusicCourseRandomMusic` drawing the archived ランダムコース songs inside their own
+difficulty/level bands, and a chart that was not drawn - or is not one of the course's own
+three songs - refused. Recreate the clone before rerunning, and drop it afterwards. The
+calendar, the song draw, the copied trophy bands and the rank scale are pinned by
+`test_course_schedule.py`, which reads no database.

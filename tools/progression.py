@@ -243,8 +243,13 @@ async def start_course(request:Request):
         if p is None:raise Rejected()
         course,details,index=find_course(p.music_course_detail_master_id)
         d=details[index]
-        if d.live_master_id!=p.live_master_id or int(p.music_course_gauge_type) not in (0,1):raise Rejected('Unsupported course chart')
+        if int(p.music_course_gauge_type) not in (0,1):raise Rejected('Unsupported course chart')
         async with transaction(request) as s:
+            # A fixed detail plays its own song; a random one plays what SelectMusicCourseRandomMusic
+            # handed out (the archived ランダムコース details name a difficulty/level band, not a song).
+            import music_courses
+            if not await music_courses.chart_matches(s,course,d,p.live_master_id,int(p.music_course_gauge_type)):
+                raise Rejected('Unsupported course chart')
             old=await s.conn.conn.fetchrow('SELECT * FROM preservation_course_run WHERE "userId"=$1',s.uid)
             active=await s.conn.conn.fetchrow('SELECT * FROM preservation_live_context WHERE "userId"=$1',s.uid)
             if active and active['mode']=='course':raise Rejected('Finish or retire the active stage first')
@@ -283,6 +288,8 @@ async def finish_course(s,ident,p,result):
     if data['started_at']<most_recent_reset(time.time_ns()//1000):raise Rejected('Course crossed daily reset')
     data['rates'].append(round(achievement_rate(p.base_score_blocks),4))
     data['lamps'].append(int(clear_lamp(cleared,p.base_score_blocks)));data['next']=index+1
+    import music_courses
+    data.setdefault('notes',[]).append(music_courses.note_counts(p.base_score_blocks))
     result.player_rank_point_result=None
     if not cleared or index==len(details)-1:
         old=await s.one('MusicCourse',musicCourseMasterId=course.id_)
@@ -300,6 +307,10 @@ async def finish_course(s,ident,p,result):
             if group.music_course_master_id==course.id_ and beforegrade<int(group.required_certification_grade)<=grade:
                 things.extend((int(x.thing_type),x.thing_id,x.thing_quantity) for x in group.rewards or [])
         await s.grant(things)
+        # A weekly course is a ranking course: the attempt lands in music_course_ranking and
+        # its rank band's trophies are paid once per course (CourseRankingRewardMaster).
+        await music_courses.post_attempt(s,course,data,grade)
+        await music_courses.clear_draw(s,course.id_)
         await s.conn.conn.execute('DELETE FROM preservation_course_run WHERE "userId"=$1',s.uid)
     else:await s.conn.conn.execute('UPDATE preservation_course_run SET data=$2 WHERE "userId"=$1',s.uid,data)
 
