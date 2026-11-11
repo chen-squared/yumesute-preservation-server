@@ -52,6 +52,7 @@ async def main():
     import serve  # the production app, now bound to the scratch database
     import league_schedule as schedule
     import leagues
+    import missions
     from gameplay import State
     from helpers.cache import load_master_data
     from models import FinishLiveResult
@@ -63,6 +64,9 @@ async def main():
     await app.yume_setup()
     async with app.acquire_db() as conn:
         await leagues.ensure_field_table(conn)
+        # The login hook also reissues the daily/weekly missions, so its marker table has to
+        # exist too - this run drives the app without the lifespan that would create it.
+        await missions.ensure_cycle_table(conn)
         user = await conn.conn.fetchrow('SELECT "playerRank","playerRankLimit","name" FROM "user" '
                                         'JOIN user_profile USING ("userId") WHERE "userId"=$1', ACCOUNT)
     assert user, f"{SCRATCH} must be a copy of the live save"

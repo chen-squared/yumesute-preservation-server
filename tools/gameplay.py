@@ -267,6 +267,13 @@ async def mission_progress(s, ident, delta=1, *, create=False, absolute=None):
             isCleared=cleared,
             isRewardReceived=False,
         )
+    if newly:
+        # 100300 counts the day's other daily clears and 200600 counts 100300 itself; the
+        # rule for which mission feeds which is missions.chain_target.
+        import missions
+        chained = missions.chain_target(int(m.mission_category or 0), ident)
+        if chained:
+            await mission_progress(s, chained, create=True)
     if newly and 1 <= ident < 42:
         await mission_progress(s, 42)
         if ident % 6:
@@ -1381,3 +1388,6 @@ def install(app):
     # 演劇リーグ / 演劇リーグ・トリプルキャスト: the weekly and fortnightly ladder.
     import leagues
     leagues.install(app)
+    # The daily and weekly mission sets, re-issued on their own clocks.
+    import missions
+    missions.install(app)

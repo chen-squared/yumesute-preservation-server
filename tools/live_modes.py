@@ -85,7 +85,13 @@ async def start(request: Request):
             await s.conn.conn.execute('UPDATE active_live SET "isAutoPlay"=$2 WHERE "userId"=$1', s.uid, bool(p.is_auto_play))
             active = await s.conn.conn.fetchrow('SELECT * FROM active_live WHERE "userId"=$1',s.uid)
             music=master('music_master',chart.music_master_id)
-            xp=int(music.stamina_consumption*max(1,p.stamina_consumption_ratio)*rules()['rank_xp_per_stamina']) if active['staminaSpent'] else 0
+            spent=int(music.stamina_consumption)*max(1,p.stamina_consumption_ratio) if active['staminaSpent'] else 0
+            xp=int(spent*rules()['rank_xp_per_stamina'])
+            if spent:
+                # 消費スタミナ: the daily and weekly counters track the stamina this run
+                # really paid, which a ladder run never does (leagues.ladder_stamina_cost).
+                import missions
+                await missions.spend_stamina(s,spent)
             await context(s,mode if (m or window) else 'normal',ident or 0,{'rank_xp':xp,'auto':p.is_auto_play})
             await s.conn.conn.execute('DELETE FROM preservation_course_run WHERE "userId"=$1',s.uid)
             # The sense notation the run plays against: the stage's own for concert and

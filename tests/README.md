@@ -84,3 +84,16 @@ endpoints, a real `Lives/Start` + `Lives/FinishAndValidate` run, and
 `Lives/StartTripleCastLive` for three parties. Recreate the clone before rerunning, and
 drop it afterwards. The rule, calendar and reward tables themselves are pinned by
 `test_leagues.py`, which reads no database.
+
+`check_missions.py` requires a disposable clone named `yumesute_mission_checks` made the
+same way, because the daily and weekly mission cycles have to be reissued over the saved
+mission rows and driven by the account's own parties, lesson state, market frames and
+stamina (the clone is topped up with stamina so one live can reach the 300 daily goal; the
+live save is never touched). It writes only to that clone: the login hook reissuing both
+cycles and skipping the closed mission, counters driven through real routes
+(`Lives/Start` + `Lives/FinishAndValidate`, `Lives/StartLesson`,
+`Shops/ExchangeMarketThing/{n}`, `Shops/Purchase` for the 毎日無料パック), the
+100300/200600 chain, a daily reward claim compared against master, and the next-day and
+Monday reissue. Recreate the clone before rerunning, and drop it afterwards. The
+conditions, cycle clocks and chains are pinned by `test_missions.py`, which reads no
+database.

@@ -40,6 +40,10 @@ async def refresh_daily(app,uid):
         await conn.conn.execute('SELECT pg_advisory_xact_lock($1)',uid)
         s=State(conn,uid)
         await daily(s)
+        # The daily and weekly missions are reissued on their own clocks, so an account
+        # that has not been opened for three days gets the current cycle, not three.
+        import missions
+        await missions.rotate(s)
         # Rank-cap state is re-derived at login: imported saves never carried it.
         await sync_rank_cap_state(s)
         # Ladder rewards the official server never got to send: the service stopped with
@@ -309,6 +313,9 @@ async def finish_context(s,context,p,result):
     await mission_progress(s,1600)
     if cleared:await mission_progress(s,1800)
     await mission_progress(s,3600,len(p.base_score_blocks or []))
+    import missions
+    # スターアクトを5回発動しよう: the acts the run actually triggered, in any mode.
+    await missions.star_acts(s,len(p.star_act_score_blocks or []))
 
 
 def install(app):
