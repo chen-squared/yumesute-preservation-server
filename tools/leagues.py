@@ -24,14 +24,15 @@ field sits above your best, so promotion asks you to beat your best and holding 
 asks for more than that. Generated rivals are labelled so they cannot be mistaken for
 recovered players.
 
-One thing the archive does not answer is kept visible instead of guessed:
-StartTripleCastLivePayload carries no stamina field, so a triple cast run is charged the
-song's ordinary single stamina cost here (see start_triple_cast_live).
+One rule the archive only implies is stated in one place: a ladder run costs no stamina.
+All 37 archived triple cast windows and 117 of the 165 league windows use a 10000-series
+song priced at 0 stamina, and ladder_stamina_cost is where both live paths read that.
 """
 import json
 import random
 import re
 import time
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,8 +42,6 @@ from db.user import get_partys, get_party_slots
 from helpers.cache import cache
 from helpers.live_result import play_totals
 from helpers.msgpack import fault, read_request, respond
-from helpers.user_data import _to_array
-from models.unions import IDATA_OBJECT_KEY
 from live_parity import _character_base_status, _star_rank_bonus
 from models import (
     LeaguePartyAndRankingResult,
@@ -209,6 +208,44 @@ def master_reward_package(package_id):
 def int_change(name):
     """The numeric value of a LeagueClassChangeTypes member (None, Up, Keep, Down)."""
     return int(getattr(LeagueClassChangeTypes, name))
+
+
+def ladder_stamina_cost(music):
+    """What a ladder run costs in stamina: nothing, for either ladder.
+
+    Both 演劇リーグ and トリプルキャスト are score-farming modes meant to be replayed at
+    will, and the archived master prices their songs that way: all 37 triple cast windows
+    and 117 of the 165 league windows use a 10000-series song whose stamina_consumption is
+    0. The league payload does carry ``use_stamina`` and ``StartTripleCastLivePayload``
+    carries no stamina field at all, so the rule is kept here once instead of in either
+    payload, and a ladder run never spends stamina whichever way it arrives.
+    """
+    return 0
+
+
+_FREE_RUN = ContextVar('free_ladder_run', default=False)
+_upstream_stamina_cost = None
+
+
+def begin_free_run():
+    """Mark the live start about to run as a ladder run (returns a reset token)."""
+    return _FREE_RUN.set(True)
+
+
+def end_free_run(token) -> None:
+    _FREE_RUN.reset(token)
+
+
+def _stamina_cost(live_master_id, ratio):
+    """The price ``Lives/Start`` charges: nothing while a ladder run is in flight.
+
+    The upstream route re-reads its own payload, so the free rule cannot be applied to
+    the payload parsed here; pricing the run instead also keeps ``active_live`` recording
+    that no stamina was spent, rather than taking stamina and handing it back afterwards.
+    """
+    if _FREE_RUN.get():
+        return 0
+    return _upstream_stamina_cost(live_master_id, ratio)
 
 
 # --- storage --------------------------------------------------------------------------
@@ -953,11 +990,9 @@ async def start_triple_cast_live(request: Request):
 
     The payload names only the window (mLiveId + mTripleCastId), so the three parties are
     the ones TripleCastBasic selects through partyOrder1/2/3, and order n plays against
-    sense_notation_master_id n. The archived protocol carries no stamina field here, so
-    the run is charged the song's ordinary single cost - see the module docstring.
+    sense_notation_master_id n. No stamina is charged: see ladder_stamina_cost.
     """
     from helpers.live import build_live_time_event, build_live_unit
-    from helpers.stamina import adjust_and_check_stamina
     from db.user import create_active_live, delete_active_lives
     from models import LiveUnitWithOrder, StartTripleCastLiveResult
     from progression import context
@@ -1003,20 +1038,13 @@ async def start_triple_cast_live(request: Request):
                 ordered.u_active_live_id = live_id
                 ordered.order = order
                 units.append(ordered)
-            user = await s.one('User')
-            music = master('music_master', window.music)
-            cost = int(music.stamina_consumption) if music else 0
-            spent = False
-            if cost > 0 and user:
-                spent = bool(await adjust_and_check_stamina(s.conn, s.uid, -cost, user['playerRank']))
-                user = await s.one('User')
+            # A ladder run is free to replay: nothing is charged, and the active live
+            # records that no stamina was spent (ladder_stamina_cost).
             await s.conn.execute(delete_active_lives(s.uid))
             await s.conn.execute(create_active_live(
-                s.uid, units[0].u_active_live_id, payload.m_live_id, 0, 0, spent))
+                s.uid, units[0].u_active_live_id, payload.m_live_id, 0, 0, False))
             await context(s, 'triple_cast', window.id, {'orders': chosen, 'auto': False})
             present = s.present()
-            if spent and user:
-                present = [[IDATA_OBJECT_KEY['User'], _to_array('User', user)]] + present
         return respond(StartTripleCastLiveResult(live_units=units), present=present)
     except Rejected as exc:
         return respond(StartTripleCastLiveResult(), faults=[fault('InvalidLiveStage', str(exc))])
@@ -1090,3 +1118,10 @@ def install(app):
     count = len(app.router.routes)
     app.include_router(router)
     app.router.routes[:] = app.router.routes[count:] + app.router.routes[:count]
+
+    # The one live rule the ladder adds: a ladder run is priced at no stamina. It is
+    # installed last so the price captured here is whatever the other overlays left.
+    global _upstream_stamina_cost
+    from routes import lives as live_route
+    _upstream_stamina_cost = live_route._stamina_cost
+    live_route._stamina_cost = _stamina_cost

@@ -345,6 +345,28 @@ class OfficialRewards(unittest.TestCase):
                                 f"window {window.id} has no per-play reward")
 
 
+class FreeReplays(unittest.TestCase):
+    """Both ladders are meant to be replayed, so a run is never charged stamina."""
+
+    def test_a_ladder_run_costs_nothing_even_for_a_priced_song(self):
+        priced = [m for m in cache.music_master if m.stamina_consumption][:25]
+        self.assertTrue(priced, "no priced song in master to check against")
+        for music in priced:
+            self.assertEqual(leagues.ladder_stamina_cost(music), 0,
+                             f"music {music.id_} costs {music.stamina_consumption} elsewhere")
+
+    def test_the_archive_already_prices_the_ladder_songs_that_way(self):
+        prices = {m.id_: int(m.stamina_consumption) for m in cache.music_master}
+        for kind in ("league", "triple_cast"):
+            rows = schedule.official(kind)
+            free = sum(1 for w in rows if prices[w.music] == 0)
+            if kind == "triple_cast":
+                self.assertEqual(free, len(rows), "triple cast songs are not all free in master")
+            else:
+                self.assertGreater(free * 2, len(rows),
+                                   "most league songs should already be free in master")
+
+
 class GeneratedField(unittest.TestCase):
     """The invented part, held to what it claims: labelled, and fair to the ladder."""
 

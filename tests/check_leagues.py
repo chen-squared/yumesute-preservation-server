@@ -268,6 +268,9 @@ async def main():
             assert response.status_code == 200, (path, response.status_code)
             return response.content
 
+        async with app.acquire_db() as conn:
+            stamina_before = await conn.conn.fetchval(
+                'SELECT "currentStamina" FROM "user" WHERE "userId"=$1', ACCOUNT)
         started = envelope(await raw("/api/Lives/Start", pack(StartLivePayload(
             party_id=party["id"], live_master_id=chart.id_, league_master_id=window.id,
             use_stamina=True, stamina_consumption_ratio=1, live_setting_master_id=1))))[1]
@@ -276,11 +279,14 @@ async def main():
             active = await conn.conn.fetchrow('SELECT * FROM active_live WHERE "userId"=$1', ACCOUNT)
             context = await conn.conn.fetchrow(
                 'SELECT * FROM preservation_live_context WHERE "userId"=$1', ACCOUNT)
+            stamina_after = await conn.conn.fetchval(
+                'SELECT "currentStamina" FROM "user" WHERE "userId"=$1', ACCOUNT)
         assert active["liveMasterId"] == chart.id_ and context["mode"] == "league"
         assert context["masterId"] == window.id
-        # The song costs stamina (28), and the ladder run is charged exactly once, like
-        # any other run of it - the ladder adds nothing on top.
-        assert active["staminaSpent"] is True, dict(active)
+        # This window's song is a normal priced song (28 stamina), but a ladder run is
+        # free to replay even though the payload asks for stamina: nothing is charged.
+        assert active["staminaSpent"] is False, dict(active)
+        assert stamina_after == stamina_before, (stamina_before, stamina_after)
         # The run plays against the window's own bonus notation, not the generic eight
         # windows a normal live gets: the sense timings come from SenseNotationMaster.
         notation = next(n for n in cache.sense_notation_master
@@ -292,7 +298,7 @@ async def main():
             f"missing {sorted({d.timing_second for d in notation.details} - windows)}")
         print(f"PASS: Lives/Start opened league window {window.id} (chart {chart.id_}, "
               f"{len(started[0])} actors, all {len(notation.details)} sense windows of bonus "
-              f"notation {window.sense_ids[0]} plus the opening window)")
+              f"notation {window.sense_ids[0]} plus the opening window, no stamina charged)")
 
         finished = envelope(await raw("/api/Lives/FinishAndValidate", pack(payload)))[1]
     async with app.acquire_db() as conn:
@@ -327,6 +333,9 @@ async def main():
     ]
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                  base_url="http://localhost", headers=headers) as client:
+        async with app.acquire_db() as conn:
+            cast_stamina = await conn.conn.fetchval(
+                'SELECT "currentStamina" FROM "user" WHERE "userId"=$1', ACCOUNT)
         started = envelope((await client.post(
             "/api/Lives/StartTripleCastLive",
             content=pack(StartTripleCastLivePayload(m_live_id=chart.id_, m_triple_cast_id=window.id)),
@@ -347,11 +356,15 @@ async def main():
         context = await conn.conn.fetchrow(
             'SELECT * FROM preservation_live_context WHERE "userId"=$1', ACCOUNT)
     assert active["liveMasterId"] == chart.id_ and context["mode"] == "triple_cast"
+    assert active["staminaSpent"] is False, dict(active)
     assert context["masterId"] == window.id, dict(context)
     orders = (context["extra"] or {}).get("orders") or {}
     assert sorted(int(k) for k in orders) == [1, 2, 3], orders
+    async with app.acquire_db() as conn:
+        assert await conn.conn.fetchval('SELECT "currentStamina" FROM "user" WHERE "userId"=$1',
+                                        ACCOUNT) == cast_stamina, "a ladder run charged stamina"
     print(f"PASS: Lives/StartTripleCastLive opened window {window.id} (music {window.music}, "
-          f"chart {chart.id_}) with 3 units on notations {list(window.sense_ids)}")
+          f"chart {chart.id_}) with 3 units on notations {list(window.sense_ids)}, stamina untouched")
 
     await app.close()
 

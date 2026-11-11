@@ -52,7 +52,7 @@ async def start(request: Request):
         concert = request.url.path.endswith('StartConcert')
         window = None
         if getattr(p, 'league_master_id', None):
-            from leagues import begin, window_for
+            from leagues import begin, begin_free_run, end_free_run, window_for
             window, mode, ident = window_for('league', p.league_master_id), 'league', p.league_master_id
             m = None
         else:
@@ -72,10 +72,16 @@ async def start(request: Request):
             if window:
                 await begin(s, 'league', window)
             token = set_auto_play(p.is_auto_play)
+            # A ladder run is free to replay: the price the upstream route charges for it
+            # is held at nothing while it runs (leagues.ladder_stamina_cost), no matter
+            # what the payload's use_stamina asked for.
+            free = begin_free_run() if window else None
             try:
                 r = parts(await call_bound(request, s, upstream.lives_start))
             finally:
                 reset_auto_play(token)
+                if free is not None:
+                    end_free_run(free)
             await s.conn.conn.execute('UPDATE active_live SET "isAutoPlay"=$2 WHERE "userId"=$1', s.uid, bool(p.is_auto_play))
             active = await s.conn.conn.fetchrow('SELECT * FROM active_live WHERE "userId"=$1',s.uid)
             music=master('music_master',chart.music_master_id)
