@@ -73,10 +73,11 @@ async def main():
     from helpers.cache import cache, load_master_data
     from helpers.msgpack import pack
     from helpers.shops import market_frame
-    from protocol import envelope
+    from protocol import envelope, expand, unpack_stream
 
     force_scratch_database()
     import serve  # the production app, now bound to the scratch database
+    import jewel_shop
     import missions
     from gameplay import State
     from progression import refresh_daily
@@ -215,6 +216,10 @@ async def main():
             assert response.status_code == 200, (path, response.status_code)
             return response.content
 
+        def faults(body):
+            """The fault array of a response - the part ``envelope`` refuses to return."""
+            return [expand(v) for v in unpack_stream(body)][0]
+
         started = envelope(await raw("/api/Lives/Start", pack(StartLivePayload(
             party_id=party["id"], live_master_id=chart.id_, use_stamina=True,
             stamina_consumption_ratio=ratio, live_setting_master_id=1))))[1]
@@ -269,19 +274,64 @@ async def main():
         print(f"PASS: market frame {frame['frameNumber']} paid {price} of thing {key} and counted "
               f"once for 200500, mission rows included in the response")
 
-        # --- the jewel shop's daily free pack: 100400 ----------------------------------
+        # --- the jewel shop's daily free pack: 100400, and its once-a-day cap ----------
+        async def shop_row(item_id):
+            async with app.acquire_db() as conn:
+                return await conn.conn.fetchrow(
+                    'SELECT "purchaseCount","totalPurchaseCount","rePurchaseDate" FROM jewel_shop '
+                    'WHERE "userId"=$1 AND "jewelShopItemMasterId"=$2', ACCOUNT, item_id)
+
+        async def stamina_of():
+            async with app.acquire_db() as conn:
+                return await conn.conn.fetchval('SELECT "currentStamina" FROM "user" '
+                                                'WHERE "userId"=$1', ACCOUNT)
+
+        recovered = await shop_row(4101)
+        stamp = recovered["rePurchaseDate"]
+        print(f"PASS: the save carries the official shop history for 4101 - "
+              f"{recovered['purchaseCount']} in the period, {recovered['totalPurchaseCount']} ever, "
+              f"open again at {datetime.fromtimestamp(stamp / MICRO, timezone.utc):%Y-%m-%d %H:%M} "
+              f"in the master's own wall-clock hours, which is the mission cycle's 05:00 boundary")
+
+        coin_before = (await balances())[(12, 0)]
+        stamina_before = await stamina_of()
         free = envelope(await raw("/api/Shops/Purchase",
                                   pack(PurchaseItemPayload(m_jewel_shop_item_id=4101))))
+        after = await balances()
         current = await rows()
         assert current[100400][:2] == (1, True), current[100400]
         assert any(entry[0] == MISSION_UNION_KEY for entry in free[2]), \
             "the free pack response did not carry the fresh mission rows"
-        async with app.acquire_db() as conn:
-            recorded = await conn.conn.fetchval(
-                'SELECT "purchaseCount" FROM jewel_shop WHERE "userId"=$1 AND '
-                '"jewelShopItemMasterId"=4101', ACCOUNT)
-        assert recorded, "the free pack was not recorded in the shop history"
-        print("PASS: the 毎日無料パック purchase cleared 100400 and was recorded in jewel_shop")
+        stamped = await shop_row(4101)
+        assert after[(12, 0)] == coin_before + 10_000 and await stamina_of() == stamina_before + 60, \
+            (coin_before, after[(12, 0)], stamina_before, await stamina_of())
+        assert stamped["purchaseCount"] == 1 and stamped["totalPurchaseCount"] == \
+            recovered["totalPurchaseCount"] + 1, dict(stamped)
+        assert stamped["rePurchaseDate"] == jewel_shop.period_end(1, time.time_ns() // 1000), \
+            (stamped["rePurchaseDate"], datetime.fromtimestamp(stamped["rePurchaseDate"] / MICRO, JST))
+        print("PASS: 毎日無料パック handed over its lineup (スタミナ60 + コイン10000), cleared 100400, "
+              f"and stamped itself open again at "
+              f"{datetime.fromtimestamp(stamped['rePurchaseDate'] / MICRO, JST):%Y-%m-%d %H:%M} JST")
+
+        refused = faults(await raw(
+            "/api/Shops/Purchase", pack(PurchaseItemPayload(m_jewel_shop_item_id=4101))))
+        again_after = await balances()
+        current = await rows()
+        assert len(refused) == 1 and "PurchaseLimitExceeded" in str(refused[0]), refused
+        assert await stamina_of() == stamina_before + 60 and again_after[(12, 0)] == after[(12, 0)], \
+            "the second tap the same day still paid out"
+        assert current[100400][:2] == (1, True) and current[100300][0] == 3, current
+        once = await shop_row(4101)
+        assert once["purchaseCount"] == 1 and once["totalPurchaseCount"] == \
+            stamped["totalPurchaseCount"], dict(once)
+        stamina_after_pack = await stamina_of()
+        lifetime = await shop_row(4301)
+        refused = faults(await raw(
+            "/api/Shops/Purchase", pack(PurchaseItemPayload(m_jewel_shop_item_id=4301))))
+        assert len(refused) == 1 and "PurchaseLimitExceeded" in str(refused[0]), refused
+        assert tuple(await shop_row(4301)) == tuple(lifetime), "a lifetime pack was claimed twice"
+        print(f"PASS: the same day's second tap and the already-claimed one-time pack 4301 "
+              f"({lifetime['totalPurchaseCount']} ever) were both refused and paid nothing")
 
     # --- 100300 and 200600: missions that count other missions -------------------------
     current = await rows()
@@ -316,6 +366,27 @@ async def main():
     assert {i: current[i][0] for i in week} == week, {i: current[i] for i in week}
     print("PASS: the next day's login reset the dailies and left that week's counters alone "
           f"(weekly still {week})")
+
+    # The shop's daily cap rolls on that same 05:00 boundary, so the pack is open again for
+    # the reissued 100400 - and its period count restarts instead of climbing. The stamp is
+    # pushed back by the same DAY the mission cycle was advanced by, because the route reads
+    # the real clock while ``rotate`` was handed the next day.
+    async with app.acquire_db() as conn:
+        await conn.conn.execute('UPDATE jewel_shop SET "rePurchaseDate" = "rePurchaseDate" - $2 '
+                                'WHERE "userId"=$1 AND "jewelShopItemMasterId"=4101', ACCOUNT, DAY)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://localhost", headers=headers) as client:
+        envelope((await client.post("/api/Shops/Purchase",
+                                    content=pack(PurchaseItemPayload(m_jewel_shop_item_id=4101)))).content)
+    rolled = await shop_row(4101)
+    current = await rows()
+    assert current[100400][:2] == (1, True) and current[100300][:2] == (1, False), current
+    assert rolled["purchaseCount"] == 1 and \
+        rolled["totalPurchaseCount"] == once["totalPurchaseCount"] + 1, dict(rolled)
+    assert await stamina_of() == stamina_after_pack + 60, await stamina_of()
+    print("PASS: with the day rolled the pack was open again - period count back to 1, "
+          f"{rolled['totalPurchaseCount']} ever, スタミナ60 + コイン10000 again - and cleared the "
+          "reissued 100400")
 
     monday = datetime.fromtimestamp(missions.cycle_start(missions.WEEKLY, now) / MICRO, JST)
     next_week = int((monday + timedelta(days=7, hours=1)).timestamp() * MICRO)

@@ -9,7 +9,9 @@ condition. Category 4 (``MissionCategories.Daily``) is 100000 スタミナを300
 「全てのデイリーミッションをクリアしよう」を5回. Three were already counted before this
 module existed (100200 in progression, 200300 in photo_preservation, 200100 in leagues);
 the rest are counted here, at the point where the game really spends or produces the thing
-the mission asks for, and nowhere else.
+the mission asks for, and nowhere else. 100400 is the exception in placement only: its
+counter is here, but the route that triggers it is ``jewel_shop.purchase``, which also has
+to hand the pack its lineup and keep it to once a day.
 
 Two gaps are left visible rather than papered over:
 
@@ -31,17 +33,12 @@ the week is seven days from the Monday the weekly rows opened on. Both live in
 import datetime
 import time
 
-from fastapi import APIRouter, Request
 from helpers.cache import cache
 from helpers.daily import most_recent_reset
-from helpers.msgpack import fault, read_request, respond
 from helpers.shops import available
-from models import PurchaseItemPayload
 from routes import shops as upstream_shops
 
-from gameplay import Rejected, State, mission_progress, transaction
-
-router = APIRouter()
+from gameplay import State, mission_progress
 
 _JST = datetime.timezone(datetime.timedelta(hours=9))
 _MICRO = 1_000_000
@@ -182,33 +179,13 @@ async def market_exchanges(s, count: int = 1) -> None:
 
 
 async def free_pack(s) -> None:
-    await mission_progress(s, FREE_PACK, create=True)
+    """100400: the jewel shop's 毎日無料パック, counted by ``jewel_shop.purchase``.
 
-
-# --- jewel shop: the daily free pack ---------------------------------------------------
-
-
-@router.post("/api/Shops/Purchase")
-async def purchase(request: Request):
-    """The daily free pack, then straight to the upstream route for anything else.
-
-    Counting the pack means seeing the item id, so only that one purchase is held inside a
-    transaction of its own; every other jewel-shop row is handed to the upstream handler
-    exactly as it arrived.
+    The counter lives here with the other mission counters; the route that triggers it is
+    the jewel shop's own, because that route also has to hand over the pack's lineup and
+    keep it to once a day.
     """
-    from live_modes import call_bound, parts
-
-    payload = await read_request(request, PurchaseItemPayload)
-    if not payload or int(payload.m_jewel_shop_item_id or 0) != FREE_PACK_ITEM:
-        return await upstream_shops.shops_purchase(request)
-    try:
-        async with transaction(request) as s:
-            r = parts(await call_bound(request, s, upstream_shops.shops_purchase))
-            if not r[0]:
-                await free_pack(s)
-            return respond(r[1], faults=r[0], present=r[2] + s.present())
-    except Rejected:
-        return respond([], faults=[fault("PurchaseFailed")])
+    await mission_progress(s, FREE_PACK, create=True)
 
 
 # --- market: regular exchange counter --------------------------------------------------
@@ -231,7 +208,11 @@ async def _buy_market_frame(conn, user_id: int, frame_number: int):
 
 
 def install(app):
-    """Create the cycle marker table, wire the shop route, and count market exchanges."""
+    """Create the cycle marker table and count market exchanges.
+
+    The daily free pack's counter is wired where the pack is handed over, in
+    ``jewel_shop.install``.
+    """
     from contextlib import asynccontextmanager
 
     previous = app.router.lifespan_context
@@ -243,10 +224,6 @@ def install(app):
                 await ensure_cycle_table(conn)
             yield
     app.router.lifespan_context = lifespan
-
-    count = len(app.router.routes)
-    app.include_router(router)
-    app.router.routes[:] = app.router.routes[count:] + app.router.routes[:count]
 
     global _upstream_market_buy
     _upstream_market_buy = upstream_shops._buy_market_frame

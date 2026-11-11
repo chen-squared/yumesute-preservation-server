@@ -1391,3 +1391,6 @@ def install(app):
     # The daily and weekly mission sets, re-issued on their own clocks.
     import missions
     missions.install(app)
+    # 毎日無料パック and the other free jewel-shop packs: their lineup, once per their cap.
+    import jewel_shop
+    jewel_shop.install(app)

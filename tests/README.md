@@ -92,8 +92,10 @@ stamina (the clone is topped up with stamina so one live can reach the 300 daily
 live save is never touched). It writes only to that clone: the login hook reissuing both
 cycles and skipping the closed mission, counters driven through real routes
 (`Lives/Start` + `Lives/FinishAndValidate`, `Lives/StartLesson`,
-`Shops/ExchangeMarketThing/{n}`, `Shops/Purchase` for the 毎日無料パック), the
-100300/200600 chain, a daily reward claim compared against master, and the next-day and
-Monday reissue. Recreate the clone before rerunning, and drop it afterwards. The
-conditions, cycle clocks and chains are pinned by `test_missions.py`, which reads no
-database.
+`Shops/ExchangeMarketThing/{n}`), the jewel shop's 毎日無料パック handing over its lineup
+(スタミナ60 + コイン10000) and stamping the next boundary, the same day's second tap and the
+already-claimed one-time pack 4301 both refused, the 100300/200600 chain, a daily reward
+claim compared against master, and the next-day and Monday reissue - after which the pack is
+open again and its period count restarts at 1. Recreate the clone before rerunning, and drop
+it afterwards. The conditions, cycle clocks, chains and shop caps are pinned by
+`test_missions.py` and `test_jewel_shop.py`, which read no database.
