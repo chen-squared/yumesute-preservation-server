@@ -50,10 +50,18 @@ async def start(request: Request):
         p = await read_request(request, StartLivePayload)
         if p is None: raise Rejected('Missing payload')
         concert = request.url.path.endswith('StartConcert')
-        mode, ident = ('concert', p.concert_stage_master_id) if concert else ('audition', p.audition_master_id)
-        m = master('concert_stage_master' if concert else 'audition_master', ident) if ident else None
+        window = None
+        if getattr(p, 'league_master_id', None):
+            from leagues import begin, window_for
+            window, mode, ident = window_for('league', p.league_master_id), 'league', p.league_master_id
+            m = None
+        else:
+            mode, ident = ('concert', p.concert_stage_master_id) if concert else ('audition', p.audition_master_id)
+            m = master('concert_stage_master' if concert else 'audition_master', ident) if ident else None
         chart = master('live_master', p.live_master_id)
-        if not chart or (concert and not m) or (ident and not m) or (m and chart.music_master_id != m.music_master_id):
+        if not chart or (concert and not m) or (ident and not m and not window) or (
+                m and chart.music_master_id != m.music_master_id) or (
+                window and chart.music_master_id != window.music):
             raise Rejected('Invalid stage or chart')
         async with transaction(request) as s:
             if not await s.one('Party', id=p.party_id): raise Rejected('Missing party')
@@ -61,6 +69,8 @@ async def start(request: Request):
                 raise Rejected('Stage is locked')
             from progression import daily, context, rules
             await daily(s)
+            if window:
+                await begin(s, 'league', window)
             token = set_auto_play(p.is_auto_play)
             try:
                 r = parts(await call_bound(request, s, upstream.lives_start))
@@ -70,11 +80,15 @@ async def start(request: Request):
             active = await s.conn.conn.fetchrow('SELECT * FROM active_live WHERE "userId"=$1',s.uid)
             music=master('music_master',chart.music_master_id)
             xp=int(music.stamina_consumption*max(1,p.stamina_consumption_ratio)*rules()['rank_xp_per_stamina']) if active['staminaSpent'] else 0
-            await context(s,mode if m else 'normal',ident or 0,{'rank_xp':xp,'auto':p.is_auto_play})
+            await context(s,mode if (m or window) else 'normal',ident or 0,{'rank_xp':xp,'auto':p.is_auto_play})
             await s.conn.conn.execute('DELETE FROM preservation_course_run WHERE "userId"=$1',s.uid)
-            if m:
+            # The sense notation the run plays against: the stage's own for concert and
+            # audition, the league window's bonus set for a ladder run.
+            notation = (m.music_master_id, m.sense_notation_master_id) if m else (
+                window.music, window.sense_ids[0]) if window else None
+            if notation:
                 unit = from_array('LiveUnit', r[1])
-                lte = await build_live_time_event(s.conn, s.uid, p.party_id, m.music_master_id, m.sense_notation_master_id)
+                lte = await build_live_time_event(s.conn, s.uid, p.party_id, *notation)
                 unit.time_events = {t.timing_seconds:t.event for t in lte.timings}
                 r[1] = unit
         return respond(r[1], faults=r[0], present=r[2]+s.present())
@@ -140,6 +154,11 @@ async def finish(request: Request):
                 score, cleared = play_totals(p)
                 if context['mode'] in ('concert','audition'):
                     await apply_progress(s, context['mode'], context['masterId'], score, len(p.star_act_score_blocks or []), cleared, result)
+                if context['mode'] in ('league','triple_cast'):
+                    # The ladder posts its own result: best score, the party that got it,
+                    # the per-play reward package and the weekly league mission.
+                    from leagues import score_ladder
+                    await score_ladder(s, context, active, p, result)
                 from progression import finish_context
                 await finish_context(s,context,p,result)
             await s.conn.conn.execute('DELETE FROM preservation_live_context WHERE "userId"=$1', s.uid)

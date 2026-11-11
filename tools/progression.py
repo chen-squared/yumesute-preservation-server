@@ -42,6 +42,13 @@ async def refresh_daily(app,uid):
         await daily(s)
         # Rank-cap state is re-derived at login: imported saves never carried it.
         await sync_rank_cap_state(s)
+        # Ladder rewards the official server never got to send: the service stopped with
+        # a graded window still marked unsent in the recovered save. Only archived windows
+        # are paid here; windows we run are paid through GET /api/Leagues instead, so the
+        # client still gets to show the ladder's own reward screen.
+        import leagues
+        await leagues.push(s, 'league', only_official=True)
+        await leagues.push(s, 'triple_cast', only_official=True)
 
 async def context(s,mode,ident,extra):
     await s.conn.conn.execute('DELETE FROM preservation_live_context WHERE "userId"=$1',s.uid)

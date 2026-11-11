@@ -25,6 +25,9 @@ def preserved_master():
     tables=unpack((ROOT/'private/upstream/master-original.db').read_bytes());changes=[]
     for name,rows in tables.items():
         for row in rows:extend_row(name,row,changes)
+    # The ladder windows that keep 演劇リーグ / トリプルキャスト running (see league_schedule).
+    from league_schedule import extend_tables
+    extend_tables(tables,changes)
     body=pack(tables)
     return body,hashlib.sha256(body).hexdigest()[:16],changes
 

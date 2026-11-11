@@ -1378,3 +1378,6 @@ def install(app):
     customization.install(app)
     import progression
     progression.install(app)
+    # 演劇リーグ / 演劇リーグ・トリプルキャスト: the weekly and fortnightly ladder.
+    import leagues
+    leagues.install(app)

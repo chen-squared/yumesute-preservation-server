@@ -74,3 +74,13 @@ round trips, credential preservation, local-first outages and unchanged progress
 disposable clone with two accounts and prepared master data. It changes bookmarks
 only in that clone and checks room-list responses, input validation, concurrency,
 account isolation and persistence through reload/import compatibility overlays.
+
+`check_leagues.py` requires a disposable clone named `yumesute_league_checks` made from
+a recovered installation (`createdb` plus `pg_dump | psql`), because the 演劇リーグ /
+演劇リーグ・トリプルキャスト ladder needs the saved class state to be checked against
+master. It writes only to that clone: the ladder rewards the official server never sent
+for triple cast window 3036, a league window played and settled, the ranking and menu
+endpoints, a real `Lives/Start` + `Lives/FinishAndValidate` run, and
+`Lives/StartTripleCastLive` for three parties. Recreate the clone before rerunning, and
+drop it afterwards. The rule, calendar and reward tables themselves are pinned by
+`test_leagues.py`, which reads no database.
