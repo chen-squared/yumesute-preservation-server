@@ -17,7 +17,9 @@ because league entities reference the window id.
 
 Songs are dealt out of the official pool in shuffled cycles, so a song never repeats
 inside a cycle, and each song carries the sense-notation set (and the play-reward
-package) that an official window used with it.
+package) that an official window used with it. Only the pairings the ladder itself
+settled on are dealt out - see usable() for why 48 of the archived league pairings
+name two different songs in the two places the client reads them from.
 """
 import datetime as dt
 import json
@@ -144,18 +146,73 @@ def anchor(kind):
 
 
 def songs(kind):
-    """music -> [(source window id, sense ids, vocal version)] used by the archive."""
+    """music -> [(source window id, sense ids, vocal version)] used by the archive.
+
+    Every pairing, including the ones a generated window must not copy; usable() is the
+    one the ladder draws from.
+    """
     pairs = {}
     for row in official(kind):
         pairs.setdefault(row.music, []).append((row.id, row.sense_ids, row.vocal_version))
     return pairs
 
 
-def _deal(kind, position, pool):
+@lru_cache(maxsize=None)
+def titles():
+    """music id -> (title of the song row, {vocal version: title of that arrangement}).
+
+    The ladder's entry card is drawn from MusicMaster, which is what the ladder's
+    TopMenuInformation hands over as ``music_master_id``. The ladder page instead resolves
+    the window's own ``vocal_version`` in that row's MusicVocalVersionMaster list, and that
+    arrangement can carry a different title.
+    """
+    found = {}
+    for row in json.loads((MASTERDATA / 'MusicMaster.json').read_text(encoding='utf-8')):
+        found[int(row['id'])] = (row['name'],
+                                 {int(one['vocal_version']): one['name']
+                                  for one in row.get('vocal_versions') or []})
+    return found
+
+
+def one_song(row):
+    """True when a window on this song shows one title rather than two.
+
+    Measured on the archive: all 37 triple cast windows and 117 of the 165 league windows -
+    every league window from id 49 on - name a 10000-series (Long Ver.) song row at
+    ``vocal_version`` 1, where the song title and the arrangement title are the same string.
+    The 48 older league rows instead name the short song row and put the longer arrangement
+    on ``vocal_version`` 2, whose title adds a （Long Ver） suffix, so the card outside reads
+    情熱リベレイション while the page inside the same window reads 情熱リベレイション（Long Ver）.
+    """
+    card, arrangements = titles().get(row.music, ('', {}))
+    return arrangements.get(row.vocal_version) == card
+
+
+def usable(kind):
+    """The pairings a generated window may copy, by music.
+
+    That is the archived pairings whose song reads the same in both places (one_song),
+    which is also exactly the pairing the archived ladder has used since it settled: the
+    league's own song list has been 10000-series songs at ``vocal_version`` 1 for the last
+    117 windows, and the triple cast ladder never used anything else.
+    """
+    pairs = {}
+    for row in official(kind):
+        if one_song(row):
+            pairs.setdefault(row.music, []).append((row.id, row.sense_ids, row.vocal_version))
+    return pairs
+
+
+def pool(kind):
+    """The songs a generated window can be given, in a stable order."""
+    return sorted(usable(kind))
+
+
+def _deal(kind, position, dealings):
     """Song for the position-th generated window: shuffled cycles, no repeats inside one."""
-    size = len(pool)
+    size = len(dealings)
     cycle, index = divmod(position, size)
-    deck = list(pool)
+    deck = list(dealings)
     random.Random(f'{kind}:deck:{cycle}').shuffle(deck)
     return deck[index % size]
 
@@ -173,7 +230,7 @@ def generated(kind, now=None):
     """
     spec = KINDS[kind]
     last = anchor(kind)
-    pool = sorted(songs(kind))
+    dealings = pool(kind)
     horizon = (now if now is not None else _now()) + AHEAD_DAYS * DAY
     slot = 1
     while last.display_start + slot * spec['step'] < last.display_end:
@@ -183,8 +240,8 @@ def generated(kind, now=None):
         start = last.display_start + slot * spec['step']
         end = start + spec['step']
         window_id = last.id + window_index
-        music = _deal(kind, window_index - 1, pool)
-        source, sense, vocal = random.Random(f'{kind}:song:{window_id}').choice(songs(kind)[music])
+        music = _deal(kind, window_index - 1, dealings)
+        source, sense, vocal = random.Random(f'{kind}:song:{window_id}').choice(usable(kind)[music])
         out.append(Window(
             kind=kind,
             id=window_id,

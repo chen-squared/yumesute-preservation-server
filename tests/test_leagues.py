@@ -12,7 +12,9 @@ that phase rather than inventing one, continues the official numbering without
 collision, and is identical on every call - entities reference the window id, so a
 restart may not re-draw the ladder. Only the id and the calendar are ours: each song is
 taken from that ladder's own song pool together with a bonus-character set and a
-per-play reward package that an archived window really used with it.
+per-play reward package that an archived window really used with it - and only from the
+pairings that name the same song in both places the client reads the song from, which is
+the pairing the archived ladder itself settled on.
 
 The rules applied on top are the official ones. The class ladder moves on group rank
 alone (``up_user_amount`` / ``keep_user_amount`` / ``is_force_down_not_playing_league``),
@@ -186,7 +188,7 @@ class GeneratedContent(unittest.TestCase):
 
     def test_songs_cycle_through_the_ladders_own_pool_without_repeats(self):
         for kind in ("league", "triple_cast"):
-            pool = set(schedule.songs(kind))
+            pool = set(schedule.pool(kind))
             chain = schedule.generated(kind, now=schedule.anchor(kind).display_end + 400 * 86400)
             cycle = len(pool)
             self.assertGreater(len(chain), cycle)
@@ -197,7 +199,7 @@ class GeneratedContent(unittest.TestCase):
 
     def test_bonus_characters_and_vocal_are_a_pairing_the_archive_used(self):
         for kind in ("league", "triple_cast"):
-            used = schedule.songs(kind)
+            used = schedule.usable(kind)
             archived_ids = {w.id for w in schedule.official(kind)}
             for window in schedule.generated(kind, now=schedule.anchor(kind).display_end + 200 * 86400):
                 self.assertIn((window.source, window.sense_ids, window.vocal_version),
@@ -205,6 +207,38 @@ class GeneratedContent(unittest.TestCase):
                               f"window {window.id} pairs song {window.music} with bonus set "
                               f"{window.sense_ids}, which no archived window used")
                 self.assertIn(window.source, archived_ids)
+
+    def test_a_generated_window_names_one_song_not_two(self):
+        # The entry card is drawn from MusicMaster.name, which is what TopMenuInformation
+        # hands over; the ladder page resolves the window's vocal_version instead. The 48
+        # league windows before id 49 put the longer arrangement on a short song row, so
+        # they read as 情熱リベレイション outside and 情熱リベレイション（Long Ver） inside.
+        for kind in ("league", "triple_cast"):
+            chain = schedule.generated(kind, now=schedule.anchor(kind).display_end + 400 * 86400)
+            for window in chain:
+                card, arrangements = schedule.titles()[window.music]
+                self.assertEqual(arrangements.get(window.vocal_version), card,
+                                 f"window {window.id} shows {card} outside and "
+                                 f"{arrangements.get(window.vocal_version)} inside")
+
+    def test_the_pool_is_the_pairing_the_ladder_settled_on(self):
+        charts = {(row["music_master_id"], row["difficulty"]) for row in leagues.raw_master("LiveMaster")}
+        for kind in ("league", "triple_cast"):
+            difficulty = schedule.anchor(kind).difficulty
+            archived = schedule.songs(kind)
+            usable = schedule.usable(kind)
+            for music, pairings in usable.items():
+                self.assertIn(music, archived)
+                for source, sense_ids, vocal in pairings:
+                    self.assertEqual(vocal, 1, f"archived window {source} is not the modern pairing")
+                    self.assertGreater(music, 10000,
+                                       f"song {music} is not the long-version row the ladder uses")
+                self.assertIn((music, difficulty), charts,
+                              f"song {music} has no chart at the ladder's difficulty {difficulty}")
+            self.assertLessEqual(set(usable), set(archived))
+        # The rule really does exclude something: the league archive's first 48 windows.
+        self.assertLess(len(schedule.pool("league")), len(schedule.songs("league")))
+        self.assertEqual(len(schedule.pool("triple_cast")), len(schedule.songs("triple_cast")))
 
     def test_generated_rows_validate_against_the_master_models(self):
         for kind in ("league", "triple_cast"):
