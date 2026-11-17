@@ -138,11 +138,16 @@ def _is_long_version(live_master_id: int) -> bool:
     return bool(music.is_long_version) if music is not None else False
 
 
-async def finish(request):
-    """Same contract as upstream ``lives_finish_and_validate``, with the later fixes."""
+async def finish(request, payload=None):
+    """Same contract as upstream ``lives_finish_and_validate``, with the later fixes.
+
+    ``live_modes.settle`` hands over the payload it already decoded: one request body parses
+    under one model, and a run can arrive on another route (``alternate_notations``).
+    """
     app = request.app
     user_id = current_user_id(request)
-    payload = await read_request(request, FinishLivePayload)
+    if payload is None:
+        payload = await read_request(request, FinishLivePayload)
     if payload is None:
         return respond(FinishLiveResult())
     if not verify_score_blocks(payload):

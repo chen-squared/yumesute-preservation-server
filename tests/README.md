@@ -111,3 +111,18 @@ difficulty/level bands, and a chart that was not drawn - or is not one of the co
 three songs - refused. Recreate the clone before rerunning, and drop it afterwards. The
 calendar, the song draw, the copied trophy bands and the rank scale are pinned by
 `test_course_schedule.py`, which reads no database.
+
+`check_alternate_notations.py` requires a disposable clone named `yumesute_notation_checks`
+made the same way, with `active_live`, `preservation_live_context` and
+`preservation_course_run` cleared in it, because the やねうら (April-Fool) alternate charts
+have to be played against the 27 `another_notation` records the save already holds. It writes
+only to that clone: a meme chart started through `Lives/Start` on its own song row and settled
+through `Lives/FinishAnotherNotationLive` (a route the pinned vendor leaves as an empty stub),
+the record's lamp / grade / four-decimal rate read back and compared with the archived rows,
+the best-of rule in both directions, a record refused for another song's chart, a run refused
+on a broken score-block hash chain, the records arriving in `/api/data/user` as union key 145,
+and the permanent ヤネウラ狂奏曲 course - whose three details name meme charts instead of songs -
+played through from both finish routes. It also asserts what the mode must not touch: items,
+currency, trophies, mission counters, the songs' own `live` rows and the player rate. The
+entry row's re-date, the 112 chart rows and files, the song-row rule, the record rules and the
+course details are pinned by `test_alternate_notations.py`, which reads no database.

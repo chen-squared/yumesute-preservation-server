@@ -220,6 +220,13 @@ def draw(course):
     rng = random.Random()
     out = []
     for detail in sorted(course.details or [], key=lambda d: d.set_list_number):
+        if detail.another_notation_master_id:
+            # a detail that names a meme chart plays that chart, nothing is drawn for it
+            chart = notation_chart(detail)
+            if chart is None:
+                return None
+            out.append((int(detail.set_list_number), int(chart.id_)))
+            continue
         if detail.live_master_id:
             out.append((int(detail.set_list_number), int(detail.live_master_id)))
             continue
@@ -253,13 +260,30 @@ async def clear_draw(s, course_id):
     )
 
 
+def notation_chart(detail):
+    """The chart a course detail plays when it names an alternate notation instead of a song.
+
+    The archived ヤネウラ狂奏曲 (``MusicCourseMaster`` 85, ``MusicCourseType.Special``, open
+    since 2026-05-19 with no end date) has three details that each name one meme chart
+    (``another_notation_master_id`` 30 / 100 / 58) and no ``live_master_id``, so the run plays
+    that chart's own song row - see alternate_notations.chart_for.
+    """
+    import alternate_notations
+    alt = alternate_notations.notation(detail.another_notation_master_id)
+    return alternate_notations.chart_for(alt)
+
+
 async def chart_matches(s, course, detail, live_master_id, gauge):
     """Is this chart allowed for this detail of this course?
 
-    A fixed detail has to play its own song. A random one plays what the draw handed out;
-    if the client never called the draw route, anything inside that detail's difficulty and
-    level band is accepted, because that is the band the master row itself declares.
+    A fixed detail has to play its own song. A detail that names an alternate chart has to
+    play that chart's row. A random one plays what the draw handed out; if the client never
+    called the draw route, anything inside that detail's difficulty and level band is
+    accepted, because that is the band the master row itself declares.
     """
+    if detail.another_notation_master_id:
+        chart = notation_chart(detail)
+        return bool(chart and int(chart.id_) == int(live_master_id))
     if detail.live_master_id:
         return int(detail.live_master_id) == int(live_master_id)
     drawn = await stored_draw(s, course.id_, gauge)

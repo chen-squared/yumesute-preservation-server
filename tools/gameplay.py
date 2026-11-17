@@ -1397,3 +1397,6 @@ def install(app):
     # ウィークリーコース: the weekly ranking course past the archive, and the random chart draw.
     import music_courses
     music_courses.install(app)
+    # やねうら: the April-Fool alternate-chart mode kept open, and what a run on one records.
+    import alternate_notations
+    alternate_notations.install(app)

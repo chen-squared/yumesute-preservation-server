@@ -20,11 +20,30 @@ def extend_row(name,row,changes):
         elif kind=='model' and value is not None:
             for child in value if array else [value]:extend_row(base,child,changes)
 
+# Official content the archive still ships complete even though its own window had already
+# run out, so it is re-dated by name instead of by the service-boundary rule above:
+#   EventMaster 21018 - the April-Fool ヤネウラ alternate-chart mode (event_type 23,
+#   is_aside_live_button with aside_live_button_type 3, i.e. the side button on the live
+#   screen). It closed 2026-04-08, while all 112 AnotherNotationMaster rows end in 2100 and
+#   all 112 Notations/20xxx chart folders are here, so the entry row is the only thing
+#   hiding them. The two earlier editions (21003, 21010) carry no button, and nothing else
+#   in the master - banner, top menu, missions - refers to 21018, so this row is the entry.
+REOPEN={'EventMaster':{21018}}
+
+def reopen_row(name,row,changes):
+    for k,field,base,array,kind,*_ in KEYS.get(name,()):
+        if k>=len(row):continue
+        if base=='DateTime' and 'end' in field and isinstance(row[k],msgpack.Timestamp):
+            row[k]=msgpack.Timestamp(END,row[k].nanoseconds);changes.append((name,row[0],field))
+
 @lru_cache(maxsize=1)
 def preserved_master():
     tables=unpack((ROOT/'private/upstream/master-original.db').read_bytes());changes=[]
     for name,rows in tables.items():
         for row in rows:extend_row(name,row,changes)
+    for name,ids in REOPEN.items():
+        for row in tables.get(name,()):
+            if row[0] in ids:reopen_row(name,row,changes)
     # The ladder windows that keep 演劇リーグ / トリプルキャスト running (see league_schedule).
     from league_schedule import extend_tables
     extend_tables(tables,changes)

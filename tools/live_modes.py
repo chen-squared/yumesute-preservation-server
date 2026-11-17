@@ -20,10 +20,10 @@ class BoundApp:
     @asynccontextmanager
     async def acquire_db(self): yield self.conn
 
-async def call_bound(request, s, fn):
+async def call_bound(request, s, fn, *args):
     original = request.scope['app']
     request.scope['app'] = BoundApp(original, s.conn)
-    try: return await fn(request)
+    try: return await fn(request, *args)
     finally: request.scope['app'] = original
 
 def parts(response):
@@ -152,14 +152,22 @@ async def apply_progress(s, mode, ident, score, acts, cleared, result):
 
 @router.post('/api/Lives/FinishAndValidate')
 async def finish(request: Request):
+    return await settle(request, await read_request(request, FinishLivePayload))
+
+async def settle(request: Request, p):
+    """The finish body, for a run whose payload has already been read.
+
+    A request body parses under one model only, so a run that arrives on another route -
+    a やねうら alternate chart reported by alternate_notations - settles here with the
+    payload that route decoded.
+    """
     try:
-        p = await read_request(request, FinishLivePayload)
         if p is None or not verify_score_blocks(p): raise Rejected('Invalid score blocks')
         async with transaction(request) as s:
             active = await s.conn.conn.fetchrow('SELECT * FROM active_live WHERE "userId"=$1', s.uid)
             if not active: raise Rejected('No active live')
             context = await s.conn.conn.fetchrow('SELECT * FROM preservation_live_context WHERE "userId"=$1', s.uid)
-            r = parts(await call_bound(request, s, upstream.lives_finish_and_validate))
+            r = parts(await call_bound(request, s, upstream.lives_finish_and_validate, p))
             if r[0]: raise Rejected('Live validation failed')
             result = from_array('FinishLiveResult', r[1])
             if context:
