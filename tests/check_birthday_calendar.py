@@ -28,10 +28,11 @@ import birthday_calendar as born
 import preservation_dates as dates
 
 BASE = 'http://127.0.0.1:8125'
-# The nine birthday movies the current addressables catalogue lists, and whose .usm and addressable
-# bundle are both installed: the only nine the calendar may put on this year.
+# The nine birthday movies the current addressables catalogue lists, and whose CRI film and movie
+# asset are both installed: the only nine the calendar may put on this year.
 PLAYABLE = {102, 104, 106, 201, 203, 302, 303, 402, 405}
-# One of the twelve the catalogue has no entry for: the file is on disk, the client cannot reach it.
+# One of the twelve the catalogue has no entry for, and whose film the service had already deleted:
+# the window stays closed and the client is left asking for it.
 UNREACHABLE = 'happybirthday_2025_103'
 WHAT = {born.SPLASH: 'movie', born.TITLE: 'title screen', born.VOICE: 'greeting'}
 
@@ -129,6 +130,26 @@ async def main():
         assert absent.status_code == 404 and 'location' not in absent.headers, absent.status_code
         print('PASS: the movie the catalogue has no entry for answers 404 without a redirect, and '
               'its splash row stayed closed.')
+
+        # Why those twelve cannot be opened, pinned so a later asset capture is measured against it.
+        # For the nine, the ``.usm.bundle`` is CRI's own movie file: it starts with ``CRID`` and is
+        # 5.2-5.7 MB. For the twelve it is the 4928-byte Unity asset the addressables group keeps in
+        # place of a deleted film - a ``CriAddressablesAnchor`` naming the film's address, all twelve
+        # the same size and differing only in the name inside. The film bundle that anchor points at
+        # is not named anywhere in the catalogue, so the film had left the CDN before the capture:
+        # there is no footage to rebuild a movie asset around.
+        films = {}
+        for f in sorted((ASSETS / 'cri-assets/ios/cridata_remote_assets_criaddressables')
+                        .glob('notification_happybirthday_*.usm.bundle')):
+            films[f.name[len('notification_happybirthday_'):-len('.usm.bundle')]] = f.read_bytes()
+        gone = {k for k, v in films.items() if v[:7] == b'UnityFS'}
+        assert len(gone) == 21 - len(PLAYABLE), f'{len(gone)} anchor stubs, no film'
+        assert {len(films[k]) for k in gone} == {4928}, {len(films[k]) for k in gone}
+        assert all(v[:4] == b'CRID' and len(v) > 5_000_000
+                   for k, v in films.items() if k not in gone)
+        print(f'PASS: {len(films) - len(gone)} birthday films are CRI movie files of 5.2-5.7 MB; the '
+              f'other {len(gone)} are 4928-byte anchor stubs, so their movies are missing from the '
+              'archive itself and cannot be rebuilt from what is here.')
 
         next_up = {}
         for name in born.TABLES:

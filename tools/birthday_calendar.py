@@ -45,10 +45,16 @@ move: the nine movies, the newest edition, were archived already dated 2026.
 Only the part of the calendar the archive can actually show is opened. The current addressables
 catalogue (``data/catalogs/cri-assets.json.br``, asset version 1.96.0) lists nine birthday movies -
 ``Notification_HappyBirthday_2026_102/104/106/201/203/302/303/402/405`` - and those are exactly the
-nine whose raw ``.usm`` and addressable bundle are both on disk. The other twelve ``.usm`` files are
-here, but the catalogue the 2.31.3 client reads has no entry for them, so its player cannot reach
-them; those splash rows stay closed, and that character's title screen and greeting still move.
-``movies()`` reports the split, so a later asset capture can be measured against it.
+nine whose film and movie asset are both on disk. For the other twelve the service had thrown the
+film away before the capture: their ``.usm.bundle`` is a 4928-byte Unity asset that holds a
+``CriAddressablesAnchor`` and the address ``notification_happybirthday_<value>.usm`` and nothing else
+- all twelve the same size, differing only in the name written inside - while the nine films are
+5.2-5.7 MB and start with CRI's ``CRID`` magic. The catalogue names no movie asset for the twelve
+either, and the film bundle their anchor points at (``b80ad8463764cd1cdc95ad2ec864d108.bundle`` for
+2025_103) is nowhere in it, so the film was gone from the CDN before anything was archived and there
+is nothing to reconstruct them from. Those splash rows stay closed, and that character's title screen
+and greeting still move. ``movies()`` reports the split, so a later asset capture can be measured
+against it.
 
 ``YUMESUTE_BIRTHDAY=<characterId>`` stands one character's birthday up from the moment the server
 starts instead of waiting for the date. It is a viewing aid for checking the feature in game: the
@@ -95,7 +101,8 @@ def clock(stamp):
 
 
 def movie(archived_value):
-    """Both files the client needs for one splash movie: the raw film and its addressable bundle."""
+    """Both files a splash movie needs: CRI's film and the movie asset that names it. For the twelve
+    the service deleted, the second is the one that is missing; the first is an anchor stub."""
     name = str(archived_value).lower()
     return ((MOVIE / f'notification_{name}.usm.bundle').exists()
             and (MOVIE_ASSET / f'notification_{name}.bundle').exists())
