@@ -1,6 +1,13 @@
-"""Extend final-service content windows without changing the archived master DB."""
+"""Extend final-service content windows without changing the archived master DB.
+
+Two kinds of change happen here. ``extend_row`` pushes back content that was still open when the
+service ended, ``REOPEN`` names finished official content the archive ships complete, and the
+other modules called at the bottom of ``preserved`` keep running features (ladders, weekly
+courses, the character-birthday calendar) on a schedule of their own.
+"""
 from functools import lru_cache
 from pathlib import Path
+import datetime
 import hashlib
 import msgpack
 from helpers.mastermemory import unpack,pack
@@ -36,8 +43,24 @@ def reopen_row(name,row,changes):
         if base=='DateTime' and 'end' in field and isinstance(row[k],msgpack.Timestamp):
             row[k]=msgpack.Timestamp(END,row[k].nanoseconds);changes.append((name,row[0],field))
 
-@lru_cache(maxsize=1)
-def preserved_master():
+def serving_year():
+    """Which year the birthday calendar is rebuilt for.
+
+    The master's own wall clock decides: its DateTime values are stored as instants and render
+    as UTC, which is the clock every other window rule in this file reads (see course_schedule's
+    measured Monday 17:00 -> Monday 00:00 phase), and no birthday window sits near 31 December,
+    so a device in another timezone cannot see a birthday on the wrong date.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).year
+
+@lru_cache(maxsize=4)
+def preserved(year, watch=None):
+    """The master the server hands the client, for one birthday calendar year.
+
+    Cached per year rather than per day or per process: the patched windows only change when the
+    year rolls over, so the master version the client sees moves once a year, which is what an
+    annual re-date by the service itself would look like from the app.
+    """
     tables=unpack((ROOT/'private/upstream/master-original.db').read_bytes());changes=[]
     for name,rows in tables.items():
         for row in rows:extend_row(name,row,changes)
@@ -50,8 +73,15 @@ def preserved_master():
     # The weekly course editions that keep ウィークリーコース running past 2026-09-21 (course_schedule).
     from course_schedule import extend_tables as extend_course_tables
     extend_course_tables(tables,changes)
+    # The character-birthday calendar, moved onto this year (see birthday_calendar).
+    from birthday_calendar import rotate
+    rotate(tables,changes,year,watch=watch)
     body=pack(tables)
     return body,hashlib.sha256(body).hexdigest()[:16],changes
+
+def preserved_master():
+    from birthday_calendar import pinned
+    return preserved(serving_year(),pinned())
 
 def repair_cached_dates():
     from helpers.cache import cache

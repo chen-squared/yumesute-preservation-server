@@ -131,3 +131,13 @@ must not touch: items, currency, trophies, mission counters, the songs' own `liv
 player rate and the account's stamina. The entry row's re-date, the 112 chart rows and files,
 the song-row rule, which runs this route settles itself (`decide`), the record rules and the
 course details are pinned by `test_alternate_notations.py`, which reads no database.
+
+`check_birthday_calendar.py` reads the running installation only: it fetches the master the server
+is handing the client, works out which character's birthday is open at this instant (or which one
+`YUMESUTE_BIRTHDAY` stood up), and then requests exactly the media that birthday needs through the
+same `/production/...` URLs the iPad uses, comparing each response with the local file's checksum.
+It closes by asking for one of the twelve birthday movies the current asset catalogue has no entry
+for, which must come back 404 with no redirect - that is why those splash rows are the only ones the
+calendar leaves shut. It writes nothing and touches no account. The 21 splash rows, the 50 title
+screens, the 26 greetings, the newest-edition rule, the year-only re-date and the viewing aid are
+pinned by `test_birthday_calendar.py`, which reads no database and no client.
