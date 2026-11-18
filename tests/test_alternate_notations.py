@@ -10,7 +10,8 @@ it is exactly that row and nothing else, and that the chart rows themselves were
 
 The other half is ``Lives/FinishAnotherNotationLive``, a stub in the pinned vendor: this test
 pins the record it writes - graded by the same rules as a normal live (``live_finish``), a
-best-of per chart, nothing banked by an auto-play run - and the ``LiveMaster`` row an alternate
+best-of per chart, nothing banked by an auto-play run - which run it settles itself and which
+it hands to the normal finish (``decide``), and the ``LiveMaster`` row an alternate
 chart is played on, which is also what lets the archived ヤネウラ狂奏曲 course
 (``MusicCourseMaster`` 85, whose three details name meme charts and no song) start at all.
 
@@ -233,6 +234,27 @@ class Record(unittest.TestCase):
         payload = run(notes=25)
         payload.base_score_blocks[10].score += 100_000
         self.assertFalse(verify_score_blocks(payload))
+
+
+class Route(unittest.TestCase):
+    """Which run ``Lives/FinishAnotherNotationLive`` settles itself.
+
+    Measured on the device: nine alternate-chart plays posted this route and never
+    ``Lives/Start`` (``logs/backend.log``) - the mode opens from the live screen's side button
+    and reports a result without a live session, so a missing one is the normal case here and
+    not a reason to refuse the run. Refusing it is what made every settle screen read 0.0000%.
+    """
+
+    def test_a_meme_run_is_recorded_with_or_without_a_live_session(self):
+        self.assertEqual(notations.decide('missing'), notations.RECORD)
+        self.assertEqual(notations.decide('normal'), notations.RECORD)
+
+    def test_a_course_stage_settles_where_its_life_pool_is(self):
+        self.assertEqual(notations.decide('course'), notations.HANDOFF)
+
+    def test_another_mode_run_is_refused(self):
+        for mode in ('league', 'triple_cast', 'concert', 'audition', 'lesson'):
+            self.assertEqual(notations.decide(mode), notations.REFUSE, mode)
 
 
 class MemeCourse(unittest.TestCase):

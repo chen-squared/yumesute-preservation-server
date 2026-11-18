@@ -2,11 +2,12 @@
 yumesute_notation_checks DB.
 
 This is the meme-chart mode end to end on a copy of the recovered save: the entry row the
-client needs to show the live-screen side button, a run started on a meme chart's own
-``LiveMaster`` row, that run's record landing in ``another_notation`` and in the login blob the
-client loads, the best-of rule the account's 27 archived rows already show, the two ways a run
-is refused, and the permanent ヤネウラ狂奏曲 course whose three details name meme charts and no
-songs - including the case where that course run is reported on the alternate-chart route.
+client needs to show the live-screen side button, a run posted the way the iPad posts it -
+``Lives/FinishAnotherNotationLive`` alone, with no ``Lives/Start`` and no stamina spent - that
+run's record landing in ``another_notation`` and in the login blob the client loads, the
+best-of rule the account's 27 archived rows already show, the two ways a run is refused, and
+the permanent ヤネウラ狂奏曲 course whose three details name meme charts and no songs -
+including the case where that course run is reported on the alternate-chart route.
 test_alternate_notations.py pins the rules against master and reads no database; this check
 shows they land in the real schema through the same routes the iPad calls.
 
@@ -26,12 +27,14 @@ The clone needs one precondition reset, since the checks start with nothing in p
 
 Never point it at a save you intend to keep: it starts and finishes lives and takes one
 ウィークリーコース attempt (its free daily attempt, or waived - course 85 asks for no ticket).
-Lives are started with ``use_stamina`` false so the clone's stamina stays where it was; what
-the real client pays for a run is the master's own cost, charged by ``Lives/Start`` as it does
-for any other chart.
+Alternate-chart runs are posted with no live started, which is what the device does; the lives
+that are started (for the cross-check case) use ``use_stamina`` false, and the check compares
+the clone's stamina before and after to show the mode itself spends nothing.
 """
 import asyncio
+import json
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -85,6 +88,11 @@ async def main():
 
     app = serve.app
     load_master_data()
+    # the route's diagnostic log points at its own file here, so a scratch run cannot add
+    # lines to the installation's logs/ and the check can read what it recorded
+    probe_file = Path(tempfile.gettempdir()) / "alt-notation-probe-check.jsonl"
+    probe_file.unlink(missing_ok=True)
+    notations.PROBE = probe_file
     await app.yume_setup()
     async with app.acquire_db() as conn:
         # This run drives the app without its lifespan, so the local tables the live routes
@@ -166,15 +174,16 @@ async def main():
             lives = await conn.conn.fetchrow('SELECT count(*) n, sum("achievementRate") rate, '
                                              'sum("timesCompleted") plays FROM live '
                                              'WHERE "userId"=$1', ACCOUNT)
-            player = await conn.conn.fetchval('SELECT "playerRate" FROM user_profile '
-                                              'WHERE "userId"=$1', ACCOUNT)
+            player = await conn.conn.fetchrow(
+                'SELECT p."playerRate",u."currentStamina" FROM user_profile p JOIN "user" u '
+                'ON u."userId"=p."userId" WHERE p."userId"=$1', ACCOUNT)
         return (Counter({(1, row["itemMasterId"]): row["stock"] for row in items}
                         | {(12, 0): currency["coin"], (13, 0): currency["freeJewel"],
                            (14, 0): currency["paidJewel"]}),
                 Counter(row["trophyMasterId"] for row in trophies),
                 {int(row["missionMasterId"]): int(row["missionCurrentCount"]) for row in missions},
                 (int(lives["n"]), float(lives["rate"] or 0), int(lives["plays"] or 0)),
-                float(player or 0.0))
+                (float(player["playerRate"] or 0.0), int(player["currentStamina"] or 0)))
 
     fresh = next(alt for alt in sorted(charts) if alt not in held)
     best = max(held, key=lambda alt: float(held[alt]["achievementRatePercentRecord"]))
@@ -203,22 +212,18 @@ async def main():
             return body
 
         # --- the route is the preservation one, not the vendor's empty stub -------------
-        probe = await raw("/api/Lives/FinishAnotherNotationLive", pack(run_payload(fresh)))
-        assert any("No active live" in str(value) for value in faults(probe)), faults(probe)
-        assert fresh not in await records()
+        bogus = run_payload(99999)
+        body = await raw("/api/Lives/FinishAnotherNotationLive", pack(bogus))
+        assert any("Unknown alternate chart" in str(value) for value in faults(body)), faults(body)
+        assert not (await records()).get(99999)
         print("PASS: the finish route answers with the preservation implementation - the pinned "
-              "vendor stub returns an empty result and writes nothing")
+              "vendor stub returns an empty result and names no chart")
 
-        # --- a first clean run on a chart with no record ---------------------------------
+        # --- a first clean run on a chart with no record, posted the way the iPad posts it:
+        # this route alone, no Lives/Start, so there is no live session and nothing to spend
         before = await balance()
         alt = charts[fresh]
-        await start(chart_of(fresh).id_)
-        playing = await state_of('SELECT * FROM active_live WHERE "userId"=$1', ACCOUNT)
-        assert playing and int(playing["liveMasterId"]) == int(chart_of(fresh).id_)
-        assert await state_of('SELECT 1 FROM active_live WHERE "userId"=$1', ACCOUNT)
-        mode = await state_of('SELECT mode FROM preservation_live_context WHERE "userId"=$1',
-                              ACCOUNT)
-        assert mode and mode["mode"] == "normal", mode
+        assert await state_of('SELECT 1 FROM active_live WHERE "userId"=$1', ACCOUNT) is None
         result = outcome(await finish(run_payload(fresh)))
         written = (await records()).get(fresh)
         assert written and int(written["clearLamp"]) == int(ClearLamps.AllPerfect)
@@ -227,17 +232,22 @@ async def main():
         assert int(result.clear_lamp) == int(ClearLamps.AllPerfect)
         assert int(result.before_clear_lamp) == int(ClearLamps.None_)
         assert result.is_high_score
-        assert await state_of('SELECT 1 FROM active_live WHERE "userId"=$1', ACCOUNT) is None
+        figures = result.rate_result.achievement_rate_result
+        assert (float(figures.best_ever), float(figures.this_time)) == (0.0, 101.0), figures
+        assert (float(result.rate_result.total_rate_before),
+                float(result.rate_result.total_rate_after)) == (before[4][0], before[4][0])
+        assert await state_of('SELECT 1 FROM active_live WHERE "userId"=$1', ACCOUNT) is None, \
+            "a meme run must not open or leave a live session"
         assert await state_of('SELECT 1 FROM preservation_live_context WHERE "userId"=$1',
                               ACCOUNT) is None
         print(f"PASS: {name_of(alt.music_master_id)} / 難易度{alt.difficulty}-{alt.level} "
-              f"(chart {fresh}, type {alt.another_notation_type}) started on live "
-              f"{chart_of(fresh).id_} and wrote clearLamp {written['clearLamp']}, "
-              f"rateGrade {written['rateGrade']}, record "
-              f"{written['achievementRatePercentRecord']}")
+              f"(chart {fresh}, type {alt.another_notation_type}) settled from this route alone - "
+              f"no live started, no stamina spent - writing clearLamp "
+              f"{written['clearLamp']}, rateGrade {written['rateGrade']}, record "
+              f"{written['achievementRatePercentRecord']}, and the result panel's own "
+              f"{float(figures.this_time):.4f}% / grade {result.rate_grade}")
 
         # --- the best-of rule, both directions ------------------------------------------
-        await start(chart_of(fresh).id_)
         first = (await records())[fresh]
         result = outcome(await finish(run_payload(fresh, timing=TimingTypes.GREAT)))
         after = (await records())[fresh]
@@ -246,7 +256,6 @@ async def main():
         assert int(result.before_clear_lamp) == int(ClearLamps.AllPerfect)
         assert not result.is_high_score
         kept = held[best]
-        await start(chart_of(best).id_)
         await finish(run_payload(best, timing=TimingTypes.PERFECT))
         same = (await records())[best]
         assert same["achievementRatePercentRecord"] == kept["achievementRatePercentRecord"]
@@ -257,6 +266,7 @@ async def main():
               f"id {kept['id']}")
 
         # --- two ways a run is refused --------------------------------------------------
+        # a run that names another song's chart while a live on a different song is open
         wrong = next(alt for alt in sorted(charts)
                      if alt not in held and int(charts[alt].music_master_id)
                      != int(charts[fresh].music_master_id))
@@ -267,13 +277,12 @@ async def main():
         assert await state_of('SELECT 1 FROM active_live WHERE "userId"=$1', ACCOUNT), \
             "a refused run should leave its live to retire"
         await raw("/api/Lives/Retire")
-        await start(chart_of(fresh).id_)
+        # a run whose score-block hash chain does not reproduce
         tampered = run_payload(fresh, timing=TimingTypes.PERFECT)
         tampered.base_score_blocks[10].score += 500_000
         body = await raw("/api/Lives/FinishAnotherNotationLive", pack(tampered))
         assert any("InvalidScoreBlockHash" in str(value) for value in faults(body)), faults(body)
         assert (await records())[fresh]["achievementRatePercentRecord"] == "101.0000"
-        await raw("/api/Lives/Retire")
         print(f"PASS: a run reporting another song's chart and a run whose block hash chain does "
               f"not reproduce are both refused, with the record and the live untouched")
 
@@ -283,10 +292,12 @@ async def main():
         assert untouched[1] == before[1], "an alternate run paid a trophy"
         assert untouched[2] == before[2], "an alternate run moved a mission counter"
         assert untouched[3] == before[3], "an alternate run wrote the song's own live row"
-        assert untouched[4] == before[4], "an alternate run moved the player's live rate"
+        assert untouched[4][0] == before[4][0], "an alternate run moved the player's live rate"
+        assert untouched[4][1] == before[4][1], "an alternate run spent stamina"
         print(f"PASS: across four accepted alternate runs the items, currency, trophies, "
               f"{len(before[2])} mission counters, {before[3][0]} live rows (total rate "
-              f"{before[3][1]:.2f}, player rate {before[4]:.2f}) never moved")
+              f"{before[3][1]:.2f}, player rate {before[4][0]:.2f}) and the "
+              f"{before[4][1]} stamina never moved")
 
         # --- the client sees the records on login ---------------------------------------
         listing = envelope((await client.get("/api/data/user")).content)[1]
@@ -344,6 +355,24 @@ async def main():
               f"{[int(d.another_notation_master_id) for d in details]}), paid {paid}, settled "
               f"from both finish routes, and asked for no ranking row, ticket or trophy; the "
               f"three runs went to the live rows as a normal course run does")
+
+        # --- what the route recorded about those runs -----------------------------------
+        lines = [json.loads(line) for line in probe_file.read_text().splitlines()]
+        kinds = Counter(line["decision"].split(" ")[0] for line in lines)
+        assert any(line["decision"] == "rejected: unknown alternate chart" for line in lines), lines
+        assert any(line["decision"] == "rejected: score-block hash chain" for line in lines), lines
+        assert any(line["decision"].startswith("settled by") for line in lines), lines
+        recorded = [line for line in lines if line["decision"].startswith("recorded")]
+        assert recorded and all(line["base"] == NOTES for line in recorded), recorded
+        accepted = recorded[0]
+        assert len(accepted["wire"]) == 6 and accepted["wire"][0] == f"list[{NOTES}]", accepted
+        assert accepted["wire"][4] == "int" and accepted["wire"][5] == "bool", accepted["wire"]
+        assert not any(key.startswith("mismatch_") for key in accepted), accepted
+        assert accepted["session"] is False and accepted["best"] == "101.0000", accepted
+        print(f"PASS: the probe log recorded {len(lines)} runs ({dict(kinds)}); the payload is the "
+              f"model's six msgpack fields {accepted['wire']}, its first block "
+              f"{accepted['first']}, and an accepted run settled "
+              f"{accepted['rate']}% into {accepted['best']} with no live session")
 
 
 if __name__ == "__main__":

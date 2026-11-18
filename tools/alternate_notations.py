@@ -16,6 +16,16 @@ the pinned vendor - it returns an empty ``FinishLiveResult`` and writes nothing 
 chart could be played but its result never reached ``another_notation``, the table this
 account already has 27 rows of (union key 145, ``AnotherNotation``).
 
+The device also settles the run on its own: measured over nine alternate-chart plays on the
+iPad (``logs/backend.log``), each one posts ``Lives/FinishAnotherNotationLive`` and nothing
+else - no ``Lives/Start``, no ``Lives/Retire``. The mode opens from the live screen's side
+button, plays an archived chart file, and reports the result without ever opening a live
+session, so it spends no stamina and there is no ``active_live`` row to finish. That is why
+this route cannot borrow the normal finish's "a live must be in progress" precondition: doing
+so answers every run with ``InvalidLiveState`` and the client's result panel settles at
+0.0000%. A run is instead graded from the score blocks it carries, and where a live *is* in
+progress (a normal ``Lives/Start`` that is settled here) its song still has to match the chart.
+
 Official part, straight from the archive and the protocol:
 
   * the payload carries the same four score-block lists as a normal live and the same hash
@@ -36,19 +46,24 @@ record. The ``live`` row, the live rate, the player total rate, the rank XP a sp
 would earn, drops, mission counters and song unlocks are all left untouched: these are different
 charts with different levels (``Get to Act Life♡`` lv 107 against live row 7404's lv 28), so
 writing the song's own record from a meme run would hand out lamps and rate for a chart that was
-never played. Stamina is whatever ``Lives/Start`` already charged for the run; no free-play rule
-is invented here, and nothing is charged on this route. The hidden trophy 400017
+never played. Nothing is charged on this route either - the client opens the mode without a
+live session, so there is no stamina to refund and no cost to invent. The hidden trophy 400017
 ヤネウラの名探偵 is not granted either - the master gives no rule for it, only the text
 「エイプリルフール【2026】に参加しよう」, and inventing one would be local content.
 
-Which route a run settles on follows ``preservation_live_context``. A course stage owns its own
-shared life pool, stage sequence and (for the weekly courses) ranking row, so a course run
-reported here is handed to the ``Lives/FinishAndValidate`` body with the blocks this payload
-carries - that is what makes the archived ヤネウラ狂奏曲 details playable either way. A ladder,
-concert, audition or lesson run is refused on this route instead, so its accounting cannot be
-skipped. ``test_alternate_notations.py`` pins the record rules and the song-row rule;
+Which route a run settles on follows ``preservation_live_context``, and ``decide`` is that rule:
+a course stage owns its own shared life pool, stage sequence and (for the weekly courses)
+ranking row, so a course run reported here is handed to the ``Lives/FinishAndValidate`` body with
+the blocks this payload carries - that is what makes the archived ヤネウラ狂奏曲 details playable
+either way. A ladder, concert, audition or lesson run is refused on this route instead, so its
+accounting cannot be skipped. Everything else is the free meme run above.
+``test_alternate_notations.py`` pins the record rules, the route rule and the song-row rule;
 ``check_alternate_notations.py`` drives both routes over a clone of the save.
 """
+import json
+import time
+from pathlib import Path
+
 from fastapi import APIRouter, Request
 from db.user import delete_active_lives
 from gameplay import Rejected, master, transaction
@@ -115,27 +130,116 @@ async def live_mode(request) -> str:
     return row['mode'] if row else 'normal'
 
 
+# What this route does with a run, by the mode its live belongs to.
+RECORD = 'record'      # the meme run itself: free play, no live session to close
+HANDOFF = 'handoff'    # a 課題曲 stage: the course body owns the life pool and the ranking row
+REFUSE = 'refuse'      # another mode's run: its accounting lives on Lives/FinishAndValidate
+
+
+def decide(mode: str) -> str:
+    """Where a run reported on this route is settled (see the module docstring for the why)."""
+    if mode == 'course':
+        return HANDOFF
+    if mode in ('normal', 'missing'):
+        return RECORD
+    return REFUSE
+
+
+BASE_FIELDS = ("score", "life", "note_id", "timing_type", "combo")
+PROBE = Path(__file__).resolve().parents[1] / 'logs' / 'alt-notation-probe.jsonl'
+
+
+def _mismatch(blocks, fields):
+    """The first block whose hash chain does not reproduce, or None if the chain holds."""
+    running = 0
+    for index, block in enumerate(blocks or []):
+        running += sum(int(getattr(block, name)) for name in fields)
+        if int(block.hash) != running:
+            return {"index": index, "expected": running, "reported": int(block.hash),
+                    "values": {name: int(getattr(block, name)) for name in fields}}
+    return None
+
+
+def probe(request, raw, payload, decision, extra=None):
+    """One line in ``logs/alt-notation-probe.jsonl`` per alternate-chart finish.
+
+    The pinned vendor leaves this route a stub, so there is no archived capture of what the
+    client really puts on it: the first device runs are the evidence. Each line records the
+    decoded top-level shape, the block counts and one sample block, the first hash-chain
+    mismatch if there is one, and which decision the route took - enough to pin the protocol
+    down without storing a play-by-play.
+    """
+    line = {"at": int(time.time()), "user": current_user_id(request), "decision": decision}
+    if isinstance(raw, list):
+        line["wire"] = [f"list[{len(v)}]" if isinstance(v, list) else type(v).__name__
+                        for v in raw]
+    elif isinstance(raw, dict):
+        line["wire"] = f"dict:{sorted(map(str, raw))}"
+    else:
+        line["wire"] = type(raw).__name__
+    if payload is not None:
+        blocks = payload.base_score_blocks
+        line.update({
+            "notation": int(payload.another_notation_master_id),
+            "auto": bool(payload.is_auto_play),
+            "base": len(blocks or []), "sense": len(payload.sense_score_blocks or []),
+            "star": len(payload.star_act_score_blocks or []),
+            "multi": len(payload.multi_live_additional_score_blocks or []),
+        })
+        if blocks:
+            first, last = blocks[0], blocks[-1]
+            line["first"] = {name: int(getattr(first, name)) for name in BASE_FIELDS}
+            line["first"]["hash"] = int(first.hash)
+            line["last"] = {name: int(getattr(last, name)) for name in BASE_FIELDS}
+            line["last"]["hash"] = int(last.hash)
+        for name, attribute, fields in (
+                ("base", "base_score_blocks", BASE_FIELDS),
+                ("sense", "sense_score_blocks",
+                 ("score", "life", "time_event_second", "sense_id", "combo")),
+                ("star", "star_act_score_blocks",
+                 ("score", "life", "time_event_second", "combo")),
+                ("multi", "multi_live_additional_score_blocks",
+                 ("score", "life", "time_event_second", "combo"))):
+            found = _mismatch(getattr(payload, attribute, None), fields)
+            if found:
+                line[f"mismatch_{name}"] = found
+    if extra:
+        line.update(extra)
+    try:
+        PROBE.parent.mkdir(exist_ok=True)
+        with PROBE.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass          # a diagnostic never gets to break a live
+    return line
+
+
 @router.post('/api/Lives/FinishAnotherNotationLive', name='Lives_FinishAnotherNotationLive')
 async def finish_another_notation(request: Request):
+    raw = await read_request(request)
     payload = await read_request(request, FinishAnotherNotationLivePayload)
     if payload is None:
+        probe(request, raw, None, "rejected: no payload decoded")
         return respond(FinishLiveResult())
     if not verify_score_blocks(payload):
         # the same tamper check the normal finish runs, on the same block lists
+        probe(request, raw, payload, "rejected: score-block hash chain")
         return respond(FinishLiveResult(), faults=[fault('InvalidScoreBlockHash')])
     chart = notation(payload.another_notation_master_id)
     if chart is None:
+        probe(request, raw, payload, "rejected: unknown alternate chart")
         return respond(FinishLiveResult(),
                        faults=[fault('InvalidLiveState', 'Unknown alternate chart')])
     mode = await live_mode(request)
-    if mode == 'missing':
-        return respond(FinishLiveResult(), faults=[fault('InvalidLiveState', 'No active live')])
-    if mode == 'course':
+    where = decide(mode)
+    if where == HANDOFF:
         # 課題曲 run: its shared life pool and ranking row are settled by the course code,
         # which hangs off the normal finish route.
+        probe(request, raw, payload, "settled by Lives/FinishAndValidate (course stage)")
         import live_modes
         return await live_modes.settle(request, as_live_payload(payload))
-    if mode != 'normal':
+    if where == REFUSE:
+        probe(request, raw, payload, f"rejected: live mode is {mode}")
         return respond(FinishLiveResult(), faults=[fault(
             'InvalidLiveState', 'This live settles through Lives/FinishAndValidate')])
 
@@ -144,13 +248,12 @@ async def finish_another_notation(request: Request):
         async with transaction(request) as s:
             active = await s.conn.conn.fetchrow(
                 'SELECT * FROM active_live WHERE "userId"=$1', s.uid)
-            if not active:
-                raise Rejected('No active live')
-            live = master('live_master', int(active['liveMasterId']))
-            if live is None or int(live.music_master_id) != int(chart.music_master_id):
-                # The record belongs to the song that was actually started: every alternate
-                # row names one song, so a run started on another song cannot write this row.
-                raise Rejected('Alternate chart is not this live')
+            if active:
+                live = master('live_master', int(active['liveMasterId']))
+                if live is None or int(live.music_master_id) != int(chart.music_master_id):
+                    # The record belongs to the song that was actually started: every alternate
+                    # row names one song, so a run started on another song cannot write this row.
+                    raise Rejected('Alternate chart is not this live')
             row = await s.one('AnotherNotation', anotherNotationMasterId=int(chart.id_))
             values, run = record_update(row, payload, is_cleared)
             if row:
@@ -159,9 +262,11 @@ async def finish_another_notation(request: Request):
             else:
                 await s.insert('AnotherNotation', anotherNotationMasterId=int(chart.id_),
                                **values)
-            await s.conn.execute(delete_active_lives(s.uid))
-            await s.conn.conn.execute(
-                'DELETE FROM preservation_live_context WHERE "userId"=$1', s.uid)
+            if active:
+                # only a run that opened a live session has one to close
+                await s.conn.execute(delete_active_lives(s.uid))
+                await s.conn.conn.execute(
+                    'DELETE FROM preservation_live_context WHERE "userId"=$1', s.uid)
             total_rate = float(await s.conn.conn.fetchval(
                 'SELECT "playerRate" FROM user_profile WHERE "userId"=$1', s.uid) or 0.0)
             result = FinishLiveResult(
@@ -178,8 +283,14 @@ async def finish_another_notation(request: Request):
                     total_rate_after=total_rate,
                 ),
             )
+            probe(request, raw, payload, f"recorded (mode {mode})",
+                  {"rate": round(run['rate'], 4), "lamp": run['lamp'],
+                   "grade": rate_grade(run['rate']),
+                   "best": values['achievementRatePercentRecord'], "high": run['high'],
+                   "session": bool(active)})
             return respond(result, present=s.present())
     except Rejected as e:
+        probe(request, raw, payload, f"rejected: {e}")
         return respond(FinishLiveResult(), faults=[fault('InvalidLiveState', str(e))])
 
 
