@@ -32,8 +32,9 @@ What one character's birthday is made of, measured in the recovered master:
 The rule is one field: keep the month, day, hour and minute, replace only the year, with the year
 the master is being served in. Each character's content then opens on the date it opened officially
 and closes the next day, and on every other day of the year the served master is byte for byte what
-was recovered. The patched master is cached per year rather than per day, so the master version the
-client sees moves once a year, the way an annual re-date by the service itself would.
+was recovered. Birthday dates are keyed by year, so the master version the
+client sees changes for the birthday calendar once a year. League/course publication
+also advances the master version as their rolling horizons grow.
 
 Only the newest edition of a date is opened (``editions``): a re-run is its own row naming the older
 picture again, and putting two pictures on the title screen for the same day is the client's problem

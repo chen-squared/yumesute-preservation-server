@@ -6,13 +6,13 @@ explicit preservation policy, not a claimed reverse engineering of all modifiers
 import json,math,random,time
 from pathlib import Path
 from fastapi import APIRouter,Request
-from gameplay import State,Rejected,master,transaction,mission_progress,character_progress,sync_rank_cap_state,max_released_rank
+from gameplay import State,Rejected,master,transaction,mission_progress,character_progress,sync_rank_cap_state,sync_cap_flags,max_released_rank,cash_level_banks
 from helpers.cache import cache
 from helpers.msgpack import respond,read_request,fault
 from helpers.daily import most_recent_reset
 from helpers.live import build_live_unit
 from helpers.live_result import achievement_rate,play_totals,clear_lamp
-from helpers.stamina import max_stamina,adjust_and_check_stamina
+from helpers.stamina import max_stamina,effective_stamina,restored_at
 from models import (BooleanResult,StartLessonPayload,StartLivePayload,SetLessonPartyPayload,
                     LiveUnit,LessonResult,StarPointResult,PlayerRankPointResult)
 from db.user import create_active_live,delete_active_lives
@@ -36,6 +36,8 @@ async def use_daily(s,field):
 
 async def refresh_daily(app,uid):
     if uid is None:return
+    from preservation_dates import refresh_schedule_cache
+    refresh_schedule_cache()
     async with app.acquire_db() as conn,conn.transaction():
         await conn.conn.execute('SELECT pg_advisory_xact_lock($1)',uid)
         s=State(conn,uid)
@@ -53,6 +55,8 @@ async def refresh_daily(app,uid):
         import leagues
         await leagues.push(s, 'league', only_official=True)
         await leagues.push(s, 'triple_cast', only_official=True)
+        import music_courses
+        await music_courses.pay_closed(s)
 
 async def context(s,mode,ident,extra):
     await s.conn.conn.execute('DELETE FROM preservation_live_context WHERE "userId"=$1',s.uid)
@@ -165,7 +169,9 @@ async def star_points(s,base,points):
     return StarPointResult(rank_before=before,rank_after=rank,star_point_before=old,star_point_after=balance,star_point_acquired=points,received_reward=received)
 
 async def rank_xp(s,amount):
-    row=await s.one('User');before=row['playerRank'];old=row['currentRankPoint'];stamina=row['currentStamina']
+    row=await s.one('User');before=row['playerRank'];old=row['currentRankPoint']
+    now=time.time_ns()//1000
+    stamina=effective_stamina(row['currentStamina'],row['maxStaminaRestoredAt'],max_stamina(before),now)
     rank=before;balance=old+amount
     levels={x.rank:x for x in cache.player_rank_master}
     cap=min(row['playerRankLimit'],max_released_rank())
@@ -174,20 +180,20 @@ async def rank_xp(s,amount):
         m=levels.get(rank)
         if not m or m.point_to_level_up<=0 or balance<m.point_to_level_up or rank+1 not in levels:break
         balance-=m.point_to_level_up;rank+=1;restore+=max_stamina(rank)
-    # isCapedPlayerRank is the rank-at-limit state the client's cap-release UI reads; nothing
-    # in the pinned upstream maintains it. The announce flag is separate and only raised when
-    # a cap-up item arrives (State.announce_rank_cap).
-    await s.update('User',row,playerRank=rank,currentRankPoint=balance,isCapedPlayerRank=rank>=cap)
+    # Keep the old flag until sync_cap_flags sees the transition, so reaching a gate
+    # during a rank-up also raises the client's release prompt.
+    await s.update('User',row,playerRank=rank,currentRankPoint=balance)
+    await sync_cap_flags(s,row)
     if restore:
-        # Clamp instead of the helper's strict default: a rank-up restore is larger than the
-        # gap to the new max whenever the player is not nearly empty, and strict mode then
-        # returns no row and drops the restore entirely. The C# reference server adds it
-        # unclamped; the overfill above max is not pinned down by captures, so the player
-        # simply ends at the new rank's maximum.
-        await adjust_and_check_stamina(s.conn,s.uid,restore,rank,auto_max_clamp=True)
-        s.tables.pop('User',None);row=await s.one('User');s.dirty[('User',row['id'])]=row.copy()
+        # Rank-up restores may overfill the natural maximum, up to the game's 3000
+        # stock limit. Evaluate recovery against the OLD rank first: increasing max
+        # without rescheduling its timestamp would also manufacture passive stamina.
+        stamina_after=min(3000,stamina+restore)
+        await s.update('User',row,currentStamina=stamina_after,
+                       maxStaminaRestoredAt=restored_at(stamina_after,max_stamina(rank),now))
     if rank!=before:
         for ident in (1000,1100):await mission_progress(s,ident,absolute=rank)
+        await cash_level_banks(s,row)
     return PlayerRankPointResult(rank_before=before,rank_after=rank,rank_point_before=old,rank_point_after=balance,rank_point_acquired=amount,stamina_before=stamina)
 
 async def finish_lesson(s,base,p,result):
@@ -248,6 +254,8 @@ async def start_course(request:Request):
             # A fixed detail plays its own song; a random one plays what SelectMusicCourseRandomMusic
             # handed out (the archived ランダムコース details name a difficulty/level band, not a song).
             import music_courses
+            if not music_courses.is_open(course):
+                raise Rejected('Course is outside its play period')
             if not await music_courses.chart_matches(s,course,d,p.live_master_id,int(p.music_course_gauge_type)):
                 raise Rejected('Unsupported course chart')
             old=await s.conn.conn.fetchrow('SELECT * FROM preservation_course_run WHERE "userId"=$1',s.uid)
@@ -285,6 +293,8 @@ async def finish_course(s,ident,p,result):
     run=await s.conn.conn.fetchrow('SELECT * FROM preservation_course_run WHERE "userId"=$1',s.uid)
     if not run or run['data']['next']!=index:raise Rejected('Missing course session')
     data=run['data'];score,cleared=play_totals(p)
+    import music_courses
+    if not music_courses.is_open(course):raise Rejected('Course has ended')
     if data['started_at']<most_recent_reset(time.time_ns()//1000):raise Rejected('Course crossed daily reset')
     data['rates'].append(round(achievement_rate(p.base_score_blocks),4))
     data['lamps'].append(int(clear_lamp(cleared,p.base_score_blocks)));data['next']=index+1
@@ -307,8 +317,8 @@ async def finish_course(s,ident,p,result):
             if group.music_course_master_id==course.id_ and beforegrade<int(group.required_certification_grade)<=grade:
                 things.extend((int(x.thing_type),x.thing_id,x.thing_quantity) for x in group.rewards or [])
         await s.grant(things)
-        # A weekly course is a ranking course: the attempt lands in music_course_ranking and
-        # its rank band's trophies are paid once per course (CourseRankingRewardMaster).
+        # Weekly attempts remain improvable until the period closes. Login/data fetch
+        # then settles the final best rank through music_courses.pay_closed.
         await music_courses.post_attempt(s,course,data,grade)
         await music_courses.clear_draw(s,course.id_)
         await s.conn.conn.execute('DELETE FROM preservation_course_run WHERE "userId"=$1',s.uid)
@@ -319,7 +329,9 @@ async def finish_context(s,context,p,result):
     if mode=='course':await finish_course(s,context['masterId'],p,result);return
     if mode=='lesson':await finish_lesson(s,context['masterId'],p,result)
     if extra.get('auto'):await use_daily(s,'autoPlayTimes')
-    if extra.get('rank_xp',0)>0:result.player_rank_point_result=await rank_xp(s,extra['rank_xp'])
+    # An audition may just have lifted the cap even if this run spent no stamina.
+    # Zero newly earned XP must still release XP banked behind the previous cap.
+    result.player_rank_point_result=await rank_xp(s,extra.get('rank_xp',0))
     score,cleared=play_totals(p)
     await mission_progress(s,1600)
     if cleared:await mission_progress(s,1800)

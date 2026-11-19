@@ -201,6 +201,7 @@ async def _buy_market_frame(conn, user_id: int, frame_number: int):
     frame and a batch of ten counts ten. ``Mission`` is added to the refreshed types so the
     client sees the new count without waiting for the next data fetch.
     """
+    await conn.conn.execute('SELECT pg_advisory_xact_lock($1)', user_id)
     received, refreshed = await _upstream_market_buy(conn, user_id, frame_number)
     await market_exchanges(State(conn, user_id))
     refreshed.add("Mission")

@@ -237,7 +237,8 @@ async def finish_another_notation(request: Request):
         # which hangs off the normal finish route.
         probe(request, raw, payload, "settled by Lives/FinishAndValidate (course stage)")
         import live_modes
-        return await live_modes.settle(request, as_live_payload(payload))
+        return await live_modes.settle(request, as_live_payload(payload),
+                                       another_notation_master_id=chart.id_)
     if where == REFUSE:
         probe(request, raw, payload, f"rejected: live mode is {mode}")
         return respond(FinishLiveResult(), faults=[fault(
@@ -246,11 +247,15 @@ async def finish_another_notation(request: Request):
     _, is_cleared = play_totals(payload)
     try:
         async with transaction(request) as s:
+            context = await s.conn.conn.fetchrow(
+                'SELECT mode FROM preservation_live_context WHERE "userId"=$1', s.uid)
+            if context and context['mode'] not in ('normal', 'missing'):
+                raise Rejected('Live mode changed before settlement')
             active = await s.conn.conn.fetchrow(
                 'SELECT * FROM active_live WHERE "userId"=$1', s.uid)
             if active:
-                live = master('live_master', int(active['liveMasterId']))
-                if live is None or int(live.music_master_id) != int(chart.music_master_id):
+                live = chart_for(chart)
+                if live is None or int(active['liveMasterId']) != int(live.id_):
                     # The record belongs to the song that was actually started: every alternate
                     # row names one song, so a run started on another song cannot write this row.
                     raise Rejected('Alternate chart is not this live')

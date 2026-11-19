@@ -194,7 +194,7 @@ async def main():
         assert saved["perfectStar"] == NOTES * 3 and saved["miss"] == 0, saved
         assert float(saved["totalAchievementRatePercentRecord"]) == 303.0, saved
         assert saved["bestRecordChallengeCount"] == 1 and saved["bestRecordDate"], saved
-        assert saved["hasReceivedReward"] is True, saved
+        assert saved["hasReceivedReward"] is False, saved
         entries = [item for item in present if item[0] == RANKING_UNION_KEY]
         assert entries, "the ranking row never reached the client in the present blob"
         print(f"PASS: the attempt recorded 3x101.0 = "
@@ -209,13 +209,10 @@ async def main():
         assert rates == music_courses.field_rates(course.id_), "the field is not the seeded one"
         rank = 1 + sum(1 for rate in rates if rate > 303.0)
         band = music_courses.band_for(course.id_, rank)
-        granted = await trophies() - held
+        assert await trophies() == held, "a running course paid a final ranking reward"
         expected = {int(thing.thing_id) for thing in band.rewards}
-        assert set(granted) == expected and sum(granted.values()) == len(expected), \
-            (dict(granted), rank, expected)
         print(f"PASS: rank {rank} against {len(rivals)} {music_courses.RIVAL_LABEL} entrants "
-              f"(best {max(rates)}, worst {min(rates)}) paid trophy "
-              f"{sorted(expected)} and nothing else")
+              f"(best {max(rates)}, worst {min(rates)}) keeps the final trophy pending")
 
         # --- a second attempt: a new record, but the band pays once per course -----------
         held = await trophies()      # as they stand after the first payout
@@ -224,10 +221,23 @@ async def main():
             await raw("/api/Lives/FinishAndValidate", pack(perfect()))
         again = await ranking_row()
         assert again["currentChallengeCount"] == 2, again
-        assert again["hasReceivedReward"] is True, again
+        assert again["hasReceivedReward"] is False, again
         assert await trophies() == held, "the band paid its trophies twice"
         print(f"PASS: a second cleared attempt raised the challenge count to "
-              f"{again['currentChallengeCount']} and paid nothing twice")
+              f"{again['currentChallengeCount']} without locking the final reward")
+        from gameplay import State
+        async with app.acquire_db() as conn, conn.transaction():
+            await music_courses.pay_closed(State(conn, ACCOUNT),
+                                           now=course_schedule._seconds(course.end_date))
+        granted = await trophies() - held
+        assert set(granted) == expected and sum(granted.values()) == len(expected), (dict(granted), expected)
+        assert (await ranking_row())["hasReceivedReward"] is True
+        held = await trophies()
+        async with app.acquire_db() as conn, conn.transaction():
+            await music_courses.pay_closed(State(conn, ACCOUNT),
+                                           now=course_schedule._seconds(course.end_date))
+        assert await trophies() == held, "the closed course paid twice"
+        print(f"PASS: the closed course paid final trophy {sorted(expected)} exactly once")
 
         # --- the random courses: the draw upstream never answered -----------------------
         random_course = next(row for row in cache.music_course_master if row.id_ == RANDOM_COURSE)

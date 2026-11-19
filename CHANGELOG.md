@@ -11,6 +11,35 @@ pinned to `3cfca23267fb0f79d7336732db768e1510f20313`.
 [TeamOpenSirius/OpenSiriusServer](https://github.com/TeamOpenSirius/OpenSiriusServer)
 was an independent protocol reference, not a second backend merged into this release.
 
+## November 19, 2026 — Local gameplay preservation and review
+
+- Added the local live/effect calculation port, actor EXP and rank-cap handling,
+  recurring daily/weekly missions, capped free shop packs, weekly courses, alternate
+  charts and the archived birthday calendar. League opponents are explicitly labelled
+  local simulations; multiplayer remains unsupported.
+- League and Triple Cast now publish exactly one current window. Their final archived
+  windows retain their original end dates, preventing the client from selecting a
+  different song from the menu API. The rolling master and server cache advance
+  together. Generated windows also allow the archived STELLA and OLIVIER charts;
+  both modes remain free of stamina costs. Long-song plays retain their ordinary
+  achievement/lamp/play-count records without adding live rating or Olivier SpRate.
+- Fixed Triple Cast timing-event serialization, ranking order/cut lines and best-run
+  party snapshots. Unclaimed league rewards remain resolvable after a long absence.
+- Weekly ranking rewards are paid once after the course closes, using the final best
+  record, on the next login/user-data refresh. Best note counts stay with that record.
+  Added the top/near ranking APIs, corrected local record timestamp units and prevented
+  future weekly course ids from replacing anniversary courses. Already paid rewards stay paid.
+- Imported rank limits imply gates already passed. Reaching a gate raises its prompt;
+  lifting a cap releases banked rank/actor EXP even on a free audition. Rank-up stamina
+  may exceed the natural maximum up to 3000, without regenerating above the natural maximum.
+- Daily/weekly mission rotation also runs during gameplay, including claims after a
+  reset. Failed score records cannot turn into rating on a later weaker clear.
+  Alternate-chart courses no longer write ordinary chart lamps, rates or drops.
+- **Server-tested:** unit regressions plus PostgreSQL/HTTP checks on disposable save
+  copies cover these changes. Calendar/menu/cover resources and high-difficulty starts
+  were checked together. iPad screen rendering and actual high-difficulty play still
+  require device confirmation; passing server checks does not certify the thumbnail UI.
+
 ## October 8, 2026 — Android asset setup and repair
 
 - Download, setup and repair now accept `--platform android` or `--platform both`;

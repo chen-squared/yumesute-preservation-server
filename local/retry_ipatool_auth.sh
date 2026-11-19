@@ -7,7 +7,7 @@ set -u
 EMAIL="${1:-}"
 if [[ -z "$EMAIL" ]]; then read -r "EMAIL?Apple ID email: "; fi
 read -s "PW?Apple ID password: "; echo
-if [[ -n "${AUTH_CODE:-}" ]]; then echo "using auth code $AUTH_CODE"; fi
+if [[ -n "${AUTH_CODE:-}" ]]; then echo "using the supplied auth code"; fi
 
 MAX=${MAX_ATTEMPTS:-12}
 SLEEP=${SLEEP_SECONDS:-180}

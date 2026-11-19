@@ -3,8 +3,8 @@
 The recovered archive's ladder stops with the service: league window 165 and triple
 cast window 3037 both close on 2026-09-29. Every ingredient of a generated window is
 official - the song, the bonus-character sense notation, the vocal version, the class
-ladder, the per-play reward package - and only two things come from us: the id and the
-calendar.
+ladder and per-play reward package. The id/calendar continue locally; the preservation
+rules also allow the song's archived STELLA/OLIVIER charts beyond the official Expert cap.
 
 The calendar is measured off the archive rather than invented. Across all 165 archived
 LeagueMaster rows the display period is exactly seven days opening and closing at
@@ -41,12 +41,15 @@ DAY = 86400
 # Measured on the archive: counting_start_at == display_end_at - 29h for all 202 rows.
 COUNTING_LEAD = 29 * 3600
 
-# Closed windows stay published this long, so a ladder reward can still be paid out
-# after the window ends while the app has been offline.
+# Closed generated windows stay in the download for this long. Saved history and
+# unclaimed rewards remain resolvable by find()/closed() after publication expires.
 PUBLISHED_GRACE = 120 * DAY
 
 # How far ahead the chain is published.
 AHEAD_DAYS = 42
+
+# Preservation option: both ladders may use the archived STELLA/OLIVIER charts too.
+MAX_DIFFICULTY = 5
 
 KINDS = {
     'league': {
@@ -246,7 +249,7 @@ def generated(kind, now=None):
             kind=kind,
             id=window_id,
             music=music,
-            difficulty=last.difficulty,
+            difficulty=MAX_DIFFICULTY,
             sense_ids=sense,
             vocal_version=vocal,
             display_start=start,
@@ -279,12 +282,13 @@ def live(kind, now=None):
 
 
 def find(kind, window_id, now=None):
-    return next((w for w in published(kind, now) if w.id == int(window_id)), None)
+    # Publication grace limits the download, not the lifetime of saved history/rewards.
+    return next((w for w in official(kind) + generated(kind, now) if w.id == int(window_id)), None)
 
 
 def closed(kind, now=None):
     now = now if now is not None else _now()
-    return [w for w in published(kind, now) if w.display_end <= now]
+    return [w for w in official(kind) + generated(kind, now) if w.display_end <= now]
 
 
 # --- injection: the client reads these through the master data download -------------

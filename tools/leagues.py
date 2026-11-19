@@ -402,7 +402,7 @@ def rival_score(base, ordinal, rng):
 
 def party_ability(party):
     """Acting ability shown for a party: the sum of its cards' three stats."""
-    return sum(int(card.get('status') or 0) for card in party or [])
+    return sum(3 * int(card.get('status') or 0) for card in party or [])
 
 
 async def rivals(s, kind, window):
@@ -445,16 +445,22 @@ async def standings(s, kind, window):
     field = await rivals(s, kind, window)
     entry = await member(s, kind, window)
     score = int((entry or {}).get('bestScore') or 0)
-    own = mine['currentClassType']
+    joined = await group(s, kind, window)
+    own = joined['classType'] if joined else mine['currentClassType']
     same = sorted((r['score'] for r in field if r['classType'] == own), reverse=True)
     everyone = sorted((r['score'] for r in field), reverse=True)
     group_rank = 1 + sum(1 for value in same if value > score)
     global_rank = 1 + sum(1 for value in everyone if value > score)
     borders, cls = {}, ladder(window, own)
     if cls:
-        for name, amount in (('up', cls.up_user_amount), ('keep', cls.keep_user_amount)):
-            if amount and 0 < int(amount) <= len(same):
-                borders[f'{name}_border_score'] = same[int(amount) - 1]
+        scores = sorted(same + [score], reverse=True)
+        up = int(cls.up_user_amount or 0)
+        cuts = [('up', up)]
+        if cls.keep_user_amount:
+            cuts.append(('keep', up + int(cls.keep_user_amount)))
+        for name, amount in cuts:
+            if amount and 0 < int(amount) <= len(scores):
+                borders[f'{name}_border_score'] = scores[int(amount) - 1]
                 borders[f'{name}_border_ranking'] = int(amount)
     return {
         'group_rank': group_rank,
@@ -480,7 +486,8 @@ def slot_result(position, card):
         poster_level=card.get('poster_level') or None,
         accessory_master_id=card.get('accessory_master_id') or None,
         accessory_level=card.get('accessory_level') or None,
-        current_status=Status(concentration=status, expression=status, vocal=status),
+        current_status=Status(**(card.get('current_status') or
+                              dict(concentration=status, expression=status, vocal=status))),
         position=position,
         character_talent_stage=int(card.get('character_talent_stage') or 0),
         character_awakening_phase=int(card.get('character_awakening_phase') or 0),
@@ -546,12 +553,12 @@ def party_id_for(kind, window, order=1):
 
 
 async def post(s, kind, window, score, cards, difficulty, leader_position, order=1,
-               total=None):
+               total=None, replace_party=None):
     """Store one ladder result: best score, the party that got it, the played flag.
 
-    The group member row keeps the window's best total. A triple cast run posts three
-    parties against that one total, so each order also keeps its own best in its own
-    high-score row, and only a better run replaces the party shown for the window.
+    The group member row keeps the window's best total. All three triple-cast party
+    snapshots belong to that same best run, rather than mixing individual party bests
+    from different runs into a result that was never played.
     """
     spec = SPEC[kind]
     entry = await member(s, kind, window)
@@ -566,7 +573,9 @@ async def post(s, kind, window, score, cards, difficulty, leader_position, order
     if kind != 'league':
         key['order'] = int(order)
     existing = await s.one(spec['party'], **key)
-    if cards and int(score) > int(existing['highScore'] if existing else 0):
+    replace = (int(score) > int(existing['highScore'] if existing else 0)
+               if replace_party is None else replace_party)
+    if cards and replace:
         await write_party(s, kind, window, ident, cards, score, difficulty, leader_position, order)
     return before, best
 
@@ -827,9 +836,25 @@ def _row(kind, window, rank, class_type, name, user_id, score, acting, slots):
     return TripleCastPartyAndRankingResult(
         rank=rank, user_id=user_id, best_score=int(score), triple_cast_master_id=window.id,
         class_type=LeagueClassTypes(class_type), difficulty=int(window.difficulty), user_name=name,
-        parties=[TripleCastPartyResult(order=order, score=int(score), slots=slots)
+        parties=[TripleCastPartyResult(order=order, score=int(score) // 3 + (order <= int(score) % 3), slots=slots)
                  for order in (1, 2, 3)],
     )
+
+
+def stored_slot_result(row):
+    cm = master('character_master', row['characterMasterId'])
+    return slot_result(row['position'], {
+        'character_master_id': row['characterMasterId'],
+        'character_level': row['characterLevel'],
+        'character_rarity': int(cm.rarity) if cm else 1,
+        'attribute': int(cm.attribute) if cm else 1,
+        'poster_master_id': row['posterMasterId'], 'poster_level': row['posterLevel'],
+        'accessory_master_id': row['accessoryMasterId'], 'accessory_level': row['accessoryLevel'],
+        'character_talent_stage': row['characterTalentStage'],
+        'character_awakening_phase': row['characterAwakeningPhase'],
+        'character_display_awakening_status': row['characterDisplayAwakeningStatus'],
+        'current_status': row['currentStatus'],
+    })
 
 
 async def _ranking(request, kind, window_id, global_page=False):
@@ -844,35 +869,45 @@ async def _ranking(request, kind, window_id, global_page=False):
         if own:
             cards = sorted((r for r in await s.rows(spec['party_slot'])
                             if r[spec['party_slot_parent']] == own['id']), key=lambda r: r['position'])
+        own_parties = []
+        if kind == 'triple_cast':
+            slots = await s.rows(spec['party_slot'])
+            for party in sorted((p for p in await s.rows(spec['party'])
+                                 if p[spec['window']] == window.id), key=lambda p: p['order']):
+                own_parties.append(TripleCastPartyResult(
+                    order=party['order'], score=party['highScore'],
+                    slots=[stored_slot_result(r) for r in sorted(
+                        (r for r in slots if r[spec['party_slot_parent']] == party['id']),
+                        key=lambda r: r['position'])]))
         user = await s.one('User')
         profile = await s.one('UserProfile') or {}
-    own_slots = [
-        slot_result(row['position'], {
-            'character_master_id': row['characterMasterId'],
-            'character_level': row['characterLevel'],
-            'poster_master_id': row['posterMasterId'], 'poster_level': row['posterLevel'],
-            'accessory_master_id': row['accessoryMasterId'], 'accessory_level': row['accessoryLevel'],
-            'character_talent_stage': row['characterTalentStage'],
-            'character_awakening_phase': row['characterAwakeningPhase'],
-            'character_display_awakening_status': row['characterDisplayAwakeningStatus'],
-            'status': int((row['currentStatus'] or {}).get('vocal') or 0),
-        })
-        for row in cards
-    ]
+    own_slots = [stored_slot_result(row) for row in cards]
     field = [r for r in board['field'] if global_page or r['classType'] == board['class_type']]
-    rows = sorted(field, key=lambda r: -r['score'])[:GLOBAL_PAGE if global_page else len(field)]
+    rows = sorted(field, key=lambda r: -r['score'])
     out = [
         _row(kind, window, rank, rival['classType'], rival['name'], rival['userHash'], rival['score'],
              rival['actingAbility'],
              [slot_result(position, card) for position, card in enumerate(rival['party'], start=1)])
         for rank, rival in enumerate(rows, start=1)
     ]
-    out.append(_row(
+    own_result = _row(
         kind, window, board['global_rank'] if global_page else board['group_rank'],
         board['class_type'], profile.get('name'), (user or {}).get('hashUserId'), board['score'],
         int((own or {}).get('actingAbility') or 0), own_slots,
-    ))
-    return respond(out)
+    )
+    if own:
+        own_result.difficulty = int(own['difficulty'])
+    if kind == 'triple_cast':
+        own_result.parties = own_parties
+    out.append(own_result)
+    out.sort(key=lambda r: (-r.best_score, str(r.user_id)))
+    previous, rank = None, 0
+    for index, row in enumerate(out, start=1):
+        if row.best_score != previous:
+            rank = index
+        row.rank = rank
+        previous = row.best_score
+    return respond(out[:GLOBAL_PAGE] if global_page else out)
 
 
 @router.post('/api/Leagues/GroupRanking/{leagueMasterId}/{leagueGroupId}', name='Leagues_GetGroupRanking')
@@ -925,8 +960,8 @@ async def begin(s, kind, window):
     """Join before the live starts, so the score has somewhere to land."""
     if window is None:
         raise Rejected('No league window is open')
-    if window.phase(_now()) == 'upcoming':
-        raise Rejected('The league has not started yet')
+    if window.phase(_now()) != 'display':
+        raise Rejected('The league is not accepting plays')
     await join(s, kind, window)
     return window
 
@@ -1000,7 +1035,7 @@ async def start_triple_cast_live(request: Request):
     payload = await read_request(request, StartTripleCastLivePayload)
     window = window_for('triple_cast', getattr(payload, 'm_triple_cast_id', None)) if payload else None
     chart = master('live_master', getattr(payload, 'm_live_id', 0)) if payload else None
-    if not window or not chart or window.music != chart.music_master_id:
+    if not window or not chart or window.music != chart.music_master_id or int(chart.difficulty) > window.difficulty:
         return respond(StartTripleCastLiveResult(), faults=[fault('InvalidLiveStage')])
     try:
         async with transaction(request) as s:
@@ -1034,7 +1069,7 @@ async def start_triple_cast_live(request: Request):
                              'max_principal', 'is_first_play_olivier', 'base_score_percentage',
                              'base_score_difficulty_auto_coefficient'):
                     setattr(ordered, name, getattr(unit, name))
-                ordered.time_events = {event.timing_seconds: event for event in notation.timings}
+                ordered.time_events = {event.timing_seconds: event.event for event in notation.timings}
                 ordered.u_active_live_id = live_id
                 ordered.order = order
                 units.append(ordered)
@@ -1067,11 +1102,14 @@ async def score_ladder(s, context, active, payload, result):
     orders = {int(k): int(v) for k, v in (context['extra'].get('orders') or {}).items()}
     posted = {int(block.order): int(block.score) for block in payload.triple_cast_party_scores or []}
     total = sum(posted.values()) if posted else int(total_score)
+    entry = await member(s, kind, window)
+    replace_party = total > int((entry or {}).get('bestScore') or 0)
     for order, party_row in orders.items():
         cards = await party_cards(s, party_row, triple=True)
         party = await s.one('TripleCastParty', id=party_row)
         await post(s, kind, window, posted.get(order, 0), cards, difficulty,
-                   int(party['leaderPosition'] if party else 1), order=order, total=total)
+                   int(party['leaderPosition'] if party else 1), order=order, total=total,
+                   replace_party=replace_party)
     if not orders:
         entry = await member(s, kind, window)
         await write(s, SPEC[kind]['member'], {SPEC[kind]['window']: window.id},

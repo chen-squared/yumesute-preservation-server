@@ -187,7 +187,8 @@ an account; do not delete a working save to make room for it.
 | Final-service Anthology/performance end dates | Relevant end dates extended in the served master; original retained |
 | Scoring, lessons, usage limits | Some values are approximations or generous preservation policies, not exact official parity |
 | Fresh accounts | Automatic creation and initial name saving supported; full opening sequence awaits device verification |
-| Multiplayer, circles, Theater League | Unsupported/incomplete; captured traffic is not a working implementation |
+| Theater League, Triple Cast, weekly courses | Local schedules and simulated opponents; leagues also allow STELLA/OLIVIER. Device retest pending |
+| Multiplayer, circles | Unsupported/incomplete; captured traffic is not a working implementation |
 | Unlock-all / complete no-limits mode | Not included in this release |
 | Client 3.0.0 / new app installation | Use 2.31.3; see the rollback guide for compatibility details |
 

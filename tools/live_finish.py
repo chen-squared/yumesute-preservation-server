@@ -27,7 +27,7 @@ from db.user import (
     upsert_sp_rate,
 )
 from helpers.cache import cache
-from helpers.live_rate import chart_live_rate, chart_live_rate_result
+from helpers.live_rate import chart_live_rate
 from helpers.live_result import (
     achievement_rate,
     clear_lamp,
@@ -122,7 +122,8 @@ def _olivier_sp_rate_points(
     live_master_id: int, rate: float, clear_lamp: int, loss_count: int
 ) -> Optional[int]:
     lm = next((m for m in cache.live_master if m.id_ == live_master_id), None)
-    if lm is None or int(lm.difficulty) != int(MusicDifficulties.Olivier):
+    if (lm is None or int(lm.difficulty) != int(MusicDifficulties.Olivier)
+            or _is_long_version(live_master_id)):
         return None
     stella_lv = lm.level - 100
     if not 1 <= stella_lv <= 10:
@@ -138,7 +139,7 @@ def _is_long_version(live_master_id: int) -> bool:
     return bool(music.is_long_version) if music is not None else False
 
 
-async def finish(request, payload=None):
+async def finish(request, payload=None, *, record_live=True):
     """Same contract as upstream ``lives_finish_and_validate``, with the later fixes.
 
     ``live_modes.settle`` hands over the payload it already decoded: one request body parses
@@ -174,26 +175,26 @@ async def finish(request, payload=None):
         )
         prev_rate = existing.achievementRate if existing is not None else 0.0
         auto_play = bool(active["isAutoPlay"]) if active is not None else False
-        score_counts = not auto_play
+        score_counts = not auto_play and record_live
         rating_counts = is_cleared and not auto_play
+        rating_counts = rating_counts and record_live
         is_high_score = score_counts and this_rate > prev_rate
 
         best_lamp = max(before_lamp, new_lamp) if rating_counts else before_lamp
         best_rate = max(prev_rate, this_rate) if score_counts else prev_rate
         best_grade = rate_grade(best_rate)
-        effective_rate = this_rate if rating_counts else prev_rate
         times = (existing.timesCompleted if existing is not None else 0) + 1
-        notation_rate = (
-            (chart_live_rate(live_master_id, best_rate) or 0.0)
-            if rating_counts
-            else (existing.notationRate if existing is not None else 0.0)
-        )
+        previous_notation = (existing.notationRate or 0.0) if existing is not None else 0.0
+        this_notation = (chart_live_rate(live_master_id, this_rate) or 0.0) if rating_counts else previous_notation
+        # A failed high achievement remains a score record, but a later lower clear
+        # must not turn that failed record into live rating.
+        notation_rate = max(previous_notation, this_notation)
 
         live_id = existing.id if existing is not None else 0
         live_status = (
             existing.status if existing is not None else int(LiveReleaseStatus.None_)
         )
-        if existing is not None:
+        if record_live and existing is not None:
             await conn.execute(
                 update_live_result(
                     user_id,
@@ -227,7 +228,7 @@ async def finish(request, payload=None):
         await conn.execute(delete_active_lives(user_id))
 
         present: list = []
-        if live_master_id and (existing is not None or score_counts):
+        if record_live and live_master_id and (existing is not None or score_counts):
             present.append(
                 data_object(
                     "Live",
@@ -245,7 +246,7 @@ async def finish(request, payload=None):
                 )
             )
 
-        if affects_unlocks(live_master_id):
+        if record_live and not auto_play and affects_unlocks(live_master_id):
             changed = await apply_unlocks(
                 conn,
                 user_id,
@@ -258,7 +259,7 @@ async def finish(request, payload=None):
             present += [data_object("Music", music) for music in changed]
 
         live_drops: list[LiveDropThing] = []
-        if not _is_long_version(live_master_id):
+        if record_live and not _is_long_version(live_master_id):
             setting_id = active["liveSettingMasterId"] if active is not None else 0
             frames = upstream_lives.resolve_frames(
                 setting_id,
@@ -271,10 +272,7 @@ async def finish(request, payload=None):
             )
             live_drops = await grant_frames(conn, user_id, frames)
 
-        lr_best, lr_this = chart_live_rate_result(
-            live_master_id, effective_rate, prev_rate
-        )
-        live_rate_result = RateUpdateResult(best_ever=lr_best, this_time=lr_this)
+        live_rate_result = RateUpdateResult(best_ever=previous_notation, this_time=this_notation)
         total_before = _total_of_live_rates(r.notationRate for r in lives)
         after_notations = [
             r.notationRate for r in lives if r.liveMasterId != live_master_id
@@ -354,8 +352,8 @@ async def finish(request, payload=None):
     if refresh:
         present += await build_present(app, user_id, *sorted(refresh))
 
-    result_lamp = new_lamp if score_counts else before_lamp
-    display_rate = this_rate if score_counts else prev_rate
+    result_lamp = before_lamp if auto_play else new_lamp
+    display_rate = prev_rate if auto_play else this_rate
     result = FinishLiveResult(
         clear_lamp=ClearLamps(result_lamp),
         before_clear_lamp=ClearLamps(before_lamp),

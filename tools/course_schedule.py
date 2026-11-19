@@ -154,6 +154,10 @@ def generated(now=None):
     last_start = max(_seconds(row['start_date']) for row in templates)
     horizon = (now if now is not None else _now()) + AHEAD_DAYS * DAY
     out, index = [], 1
+    # Anniversary/special courses also occupy this id space (notably 500..503).
+    # Keep already-published ids, skipping archived ids as the weekly chain reaches them.
+    occupied = {int(r['id']) for r in json.loads((MASTERDATA / 'MusicCourseMaster.json').read_text(encoding='utf-8'))}
+    next_id = max(int(r['id']) for r in templates) + 1
     while last_start + index * STEP < horizon:
         start = last_start + index * STEP
         number = last_number + index
@@ -161,7 +165,10 @@ def generated(now=None):
         for position, row in enumerate(templates):
             label = department(row['name'])
             source = next(r for r in sources if department(r['name']) == label)
-            course_id = int(row['id']) + index * len(templates)
+            while next_id in occupied:
+                next_id += 1
+            course_id = next_id
+            next_id += 1
             out.append(Edition(
                 id=course_id,
                 name=row['name'].replace(f'第{last_number}回', f'第{number}回'),

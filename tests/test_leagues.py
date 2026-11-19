@@ -172,8 +172,10 @@ class GeneratedCalendar(unittest.TestCase):
             self.assertIsNotNone(schedule.find("league", archived.id, now=archived.display_end + later))
         fresh = schedule.generated("league")[0]
         self.assertIsNotNone(schedule.find("league", fresh.id, now=fresh.display_end + 86400))
-        self.assertIsNone(schedule.find("league", fresh.id,
-                                        now=fresh.display_end + 2 * schedule.PUBLISHED_GRACE))
+        later = fresh.display_end + 2 * schedule.PUBLISHED_GRACE
+        self.assertNotIn(fresh.id, {w.id for w in schedule.published("league", now=later)})
+        self.assertIsNotNone(schedule.find("league", fresh.id, now=later),
+                             "unpublished history must still be settleable after a long absence")
 
     def test_phases_run_in_the_official_order(self):
         window = schedule.anchor("league")

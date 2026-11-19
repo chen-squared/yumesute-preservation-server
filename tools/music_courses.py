@@ -6,7 +6,7 @@ Official part, straight from the recovered master and the protocol:
     per attempt - which ``progression`` already runs;
   * the ranking entity the client already carries: ``music_course_ranking`` (union key 178)
     with the hit counts, ``totalAchievementRatePercentRecord`` and ``hasReceivedReward``,
-    written once per course and updated per attempt;
+    written once per course and updated per attempt, with final rewards settled at close;
   * the reward bands, ``CourseRankingRewardMaster``: one trophy per rank band (1, 2, 3,
     4-10, 11-50, 51-100, 101+) and only for the weekly and anniversary courses - which is
     why a generated edition carries a copy of a real edition's bands (course_schedule);
@@ -28,14 +28,16 @@ accounts on this server are ranked in the same list, with their real records - a
 field is 99 entrants, one account tops out at rank 100, which is why the master's final
 101+ band stays unpaid until a second account posts a record here.
 """
+import datetime
 import random
 import time
 
 from fastapi import APIRouter, Request
 from helpers.cache import cache
 from helpers.msgpack import fault, read_request, respond
-from models import (MusicCourseRandomSelectResult, MusicCourseRandomSelectResultDetail,
-                    SelectMusicCourseRandomMusicPayload)
+from models import (CourseRankingResult, CourseResult, MusicCourseRandomSelectResult,
+                    MusicCourseRandomSelectResultDetail, NoteResult,
+                    SelectMusicCourseRandomMusicPayload, UserProfile)
 from models.enums import TimingTypes
 
 import course_schedule
@@ -72,7 +74,14 @@ COLUMNS = tuple(COLUMN_FOR_TIMING.values())
 
 
 def _now_micros():
-    return int(time.time_ns() // 1_000_000)
+    return int(time.time_ns() // 1000)
+
+
+def is_open(course, now=None):
+    """The course's actual play period, including generated editions."""
+    now = time.time() if now is None else now
+    return ((not course.start_date or course_schedule._seconds(course.start_date) <= now)
+            and (not course.end_date or now < course_schedule._seconds(course.end_date)))
 
 
 # --- the bands --------------------------------------------------------------------------
@@ -160,7 +169,7 @@ async def rank_of(s, course_id, rate):
 
 
 async def post_attempt(s, course, run, grade):
-    """Record a finished attempt in the ranking row, and pay its rank band once.
+    """Record an attempt; its final reward is settled after the course closes.
 
     Only the courses that have bands get a row, which is what the archive shows too: its
     ranking rows are weekly courses, and the 段位認定 courses have none.
@@ -177,11 +186,10 @@ async def post_attempt(s, course, run, grade):
             counts[column] += int(notes.get(column) or 0)
     values = {
         'currentChallengeCount': attempts + 1,
-        **counts,
         'totalAchievementRatePercentRecord': str(max(record, total)),
     }
     if total >= record:
-        values.update({'bestRecordChallengeCount': attempts + 1,
+        values.update({**counts, 'bestRecordChallengeCount': attempts + 1,
                        'bestRecordDate': _now_micros()})
     if row:
         await s.update('MusicCourseRanking', row, **values)
@@ -189,16 +197,92 @@ async def post_attempt(s, course, run, grade):
         row = await s.insert('MusicCourseRanking', musicCourseMasterId=course.id_,
                              hasReceivedReward=False, **values)
     rank, entrants = await rank_of(s, course.id_, float(values['totalAchievementRatePercentRecord']))
-    reward = []
-    if grade > 1 and not row['hasReceivedReward']:
+    return {'rank': rank, 'entrants': entrants, 'things': []}
+
+
+async def pay_closed(s, now=None):
+    """Pay each closed course's final best rank once; retain previously paid rewards."""
+    now = time.time() if now is None else now
+    courses = {row.id_: row for row in cache.music_course_master}
+    clears = {row['musicCourseMasterId']: row for row in await s.rows('MusicCourse')}
+    for row in await s.rows('MusicCourseRanking'):
+        course = courses.get(row['musicCourseMasterId'])
+        if (row['hasReceivedReward'] or course is None or not course.end_date
+                or course_schedule._seconds(course.end_date) > now
+                or int(clears.get(course.id_, {}).get('certificationGrade') or 0) <= 1):
+            continue
+        rank, _ = await rank_of(s, course.id_, float(row['totalAchievementRatePercentRecord'] or 0))
         band = band_for(course.id_, rank)
-        if band:
-            reward = await s.grant(
-                [(int(thing.thing_type), int(thing.thing_id), int(thing.thing_quantity))
-                 for thing in band.rewards or []]
-            )
+        if band is None:
+            continue
+        await s.grant([(int(t.thing_type), int(t.thing_id), int(t.thing_quantity))
+                       for t in band.rewards or []])
         await s.update('MusicCourseRanking', row, hasReceivedReward=True)
-    return {'rank': rank, 'entrants': entrants, 'things': reward}
+
+
+def _date(micros):
+    return datetime.datetime.fromtimestamp(int(micros or 0) / 1_000_000,
+                                           datetime.timezone.utc).isoformat()
+
+
+async def _ranking(request, course_id, near=False):
+    """Expose the same local field used by settlement through the client's ranking API."""
+    course = next((c for c in cache.music_course_master if c.id_ == course_id), None)
+    if course is None or not bands(course_id):
+        return respond([])
+    async with transaction(request) as s:
+        await rivals(s, course_id)
+        field = await s.conn.conn.fetch(
+            f'SELECT ordinal,name,rate FROM "{RIVAL_TABLE}" '
+            'WHERE "userId"=$1 AND "masterId"=$2', s.uid, course_id)
+        real = await s.conn.conn.fetch(
+            f'SELECT r.*,p.name,p."mainCharacterMasterId" FROM "{RANK_TABLE}" r '
+            'LEFT JOIN user_profile p ON p."userId"=r."userId" '
+            'WHERE r."musicCourseMasterId"=$1', course_id)
+        entries = []
+        icon = next((c.id_ for c in cache.character_master), 0)
+        for row in field:
+            entries.append((float(row['rate']), -int(row['ordinal']), CourseRankingResult(
+                user_id=-int(row['ordinal']),
+                user_profile=UserProfile(name=row['name'], main_character_master_id=icon),
+                course_result=CourseResult(total_achievement_rate_percent_record=f"{float(row['rate']):.4f}",
+                                           best_record_date=_date(0)),
+                note_result=NoteResult())))
+        for row in real:
+            entries.append((float(row['totalAchievementRatePercentRecord'] or 0), int(row['userId']),
+                            CourseRankingResult(
+                user_id=int(row['userId']),
+                user_profile=UserProfile(name=row['name'], main_character_master_id=row['mainCharacterMasterId'] or icon),
+                course_result=CourseResult(
+                    total_achievement_rate_percent_record=str(row['totalAchievementRatePercentRecord']),
+                    best_record_challenge_count=int(row['bestRecordChallengeCount'] or 0),
+                    best_record_date=_date(row['bestRecordDate'])),
+                note_result=NoteResult(perfect_star=row['perfectStar'], perfect=row['perfect'],
+                                       great=row['great'], good=row['good'], bad=row['bad'], miss=row['miss']))))
+        entries.sort(key=lambda item: (-item[0], item[1]))
+        # Equal rates share a rank, exactly as rank_of() counts only greater rates.
+        ranked, rank, previous = [], 0, None
+        for index, (rate, uid, result) in enumerate(entries, start=1):
+            if rate != previous:
+                rank = index
+            result.rank = rank
+            previous = rate
+            ranked.append(result)
+        start = 0
+        if near:
+            own = next((i for i, r in enumerate(ranked) if r.user_id == s.uid), 0)
+            start = max(0, own - 5)
+    return respond(ranked[start:start + (11 if near else 100)])
+
+
+@router.post('/api/Lives/GetCourseTopRanking/{mMusicCourseId}')
+async def course_top_ranking(request: Request, mMusicCourseId: int):
+    return await _ranking(request, mMusicCourseId)
+
+
+@router.post('/api/Lives/GetCourseNearRanking/{mMusicCourseId}')
+async def course_near_ranking(request: Request, mMusicCourseId: int):
+    return await _ranking(request, mMusicCourseId, near=True)
 
 
 # --- the random chart draw --------------------------------------------------------------
@@ -300,9 +384,11 @@ async def select_random_music(request: Request):
     payload = await read_request(request, SelectMusicCourseRandomMusicPayload)
     course_id = int(getattr(payload, 'music_course_master_id', 0) or 0)
     course = next((row for row in cache.music_course_master if row.id_ == course_id), None)
-    if course is None:
+    if course is None or not is_open(course):
         return respond(MusicCourseRandomSelectResult(), faults=[fault('InvalidCourse')])
     gauge = int(getattr(payload, 'music_course_gauge_type', 0) or 0)
+    if gauge not in (0, 1):
+        return respond(MusicCourseRandomSelectResult(), faults=[fault('InvalidCourse')])
     drawn = draw(course)
     if drawn is None:
         return respond(MusicCourseRandomSelectResult(), faults=[fault('InvalidCourse')])
@@ -320,7 +406,7 @@ async def select_random_music(request: Request):
 
 
 async def ensure_tables(conn):
-    """The two local tables - never an official entity table."""
+    """Create the local tables and repair the earlier local timestamp unit."""
     await conn.conn.execute(
         f'CREATE TABLE IF NOT EXISTS "{RIVAL_TABLE}" ('
         '"userId" bigint NOT NULL REFERENCES accounts("userId") ON DELETE CASCADE, '
@@ -334,6 +420,10 @@ async def ensure_tables(conn):
         '"masterId" integer NOT NULL, gauge integer NOT NULL, details jsonb NOT NULL, '
         '"drawnAt" bigint NOT NULL, PRIMARY KEY ("userId", "masterId", gauge))'
     )
+    # Earlier local attempts wrote milliseconds into this epoch-microsecond column.
+    await conn.conn.execute(
+        'UPDATE music_course_ranking SET "bestRecordDate"="bestRecordDate"*1000 '
+        'WHERE "bestRecordDate" BETWEEN 1000000000000 AND 10000000000000')
 
 
 def install(app):

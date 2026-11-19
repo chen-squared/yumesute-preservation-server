@@ -2,6 +2,16 @@
 
 Run from the repository root: `uv run --locked python -m unittest discover -s tests -v`.
 
+`check_review_regressions.py --database yumesute_review_checks_<suffix>` requires a
+disposable copy of a prepared save with a five-slot party and Triple Cast parties.
+It refuses other database names and verifies the connected database before running.
+Each case rolls its data writes back; startup can create/repair overlay tables in the
+copy. It covers stale daily claims, imported rank caps, rank-up stamina up to 3000,
+failed-score rating, alternate courses, expired leagues, final weekly payout and the
+top/near ranking APIs. It also compares the actual downloaded league master to the menu
+API, fetches its cover/chart resources and starts STELLA/OLIVIER in both ladders.
+Run during a weekly course's play period. This is server verification, not device play.
+
 `check_running.py` checks a running local test installation on port 8125 using its private linking credentials. It does not print account data or tokens.
 
 `check_story_rewards.py /path/to/disposable-installation` exercises fresh ticket inventory,
@@ -104,7 +114,7 @@ it afterwards. The conditions, cycle clocks, chains and shop caps are pinned by
 way, because the ウィークリーコース has to be played through against the saved course tickets
 and trophy inventory. It writes only to that clone: a full three-song attempt on the generated
 edition the client is shown this week, the attempt landing in `music_course_ranking` and
-reaching the client in the present blob, the rank band's trophy paid once across two attempts,
+reaching the client in the present blob, the rank band's trophy held until close and then paid once,
 the generated ローカル対抗 field checked against its seeded rates,
 `Lives/SelectMusicCourseRandomMusic` drawing the archived ランダムコース songs inside their own
 difficulty/level bands, and a chart that was not drawn - or is not one of the course's own

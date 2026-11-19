@@ -117,6 +117,8 @@ async def main():
             'SELECT p.id,p.name FROM party p JOIN party_slot s ON s."partyId"=p.id '
             'WHERE p."userId"=$1 GROUP BY p.id,p.name HAVING count(*)>=5 ORDER BY p.id LIMIT 1',
             ACCOUNT)
+    from progression import refresh_daily
+    await refresh_daily(app, ACCOUNT)  # establish today's cycles before the no-mutation snapshot
     assert not in_progress, "the clone already has a live in progress - reset the preconditions"
     assert party, "the save needs a five-actor party to start a live with"
     held = {int(r["anotherNotationMasterId"]): dict(r) for r in archived}
@@ -348,13 +350,13 @@ async def main():
         assert paid in ('unlimited', 'free', 'waived'), paid
         after_course = await balance()
         assert after_course[1] == untouched[1], "course 85 pays no trophy band"
-        assert after_course[3][2] == untouched[3][2] + 3, \
-            "the course stages belong to the song's own live row - that is the normal route"
+        assert after_course[3] == untouched[3], "meme course stages wrote normal chart records"
+        assert after_course[4][0] == untouched[4][0], "meme course stages changed player rate"
         print(f"PASS: {course.name} played its three meme charts (details "
               f"{[int(d.id_) for d in details]} → charts "
               f"{[int(d.another_notation_master_id) for d in details]}), paid {paid}, settled "
               f"from both finish routes, and asked for no ranking row, ticket or trophy; the "
-              f"three runs went to the live rows as a normal course run does")
+              f"three runs left the normal charts' records and player rate unchanged")
 
         # --- what the route recorded about those runs -----------------------------------
         lines = [json.loads(line) for line in probe_file.read_text().splitlines()]

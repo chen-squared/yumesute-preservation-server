@@ -10,6 +10,7 @@ from pathlib import Path
 import datetime
 import hashlib
 import msgpack
+import time
 from helpers.mastermemory import unpack,pack
 from models.keys import KEYS
 ROOT=Path(__file__).resolve().parents[1]
@@ -19,6 +20,9 @@ END=4102444800  # 2100-01-01; game already uses this sentinel for permanent char
 
 def extend_row(name,row,changes):
     if not isinstance(row,list):return
+    # These modes now have continuing schedules. Holding their final archived window
+    # open to 2100 would overlap every generated window on the client's calendar.
+    if name in ('LeagueMaster','TripleCastMaster'):return
     for k,field,base,array,kind,*_ in KEYS.get(name,()):
         if k>=len(row):continue
         value=row[k]
@@ -54,12 +58,11 @@ def serving_year():
     return datetime.datetime.now(datetime.timezone.utc).year
 
 @lru_cache(maxsize=4)
-def preserved(year, watch=None):
+def preserved(year, watch=None, schedule_day=None):
     """The master the server hands the client, for one birthday calendar year.
 
-    Cached per year rather than per day or per process: the patched windows only change when the
-    year rolls over, so the master version the client sees moves once a year, which is what an
-    annual re-date by the service itself would look like from the app.
+    Birthday windows change annually. schedule_day also invalidates the cache for the
+    rolling league/course horizon; the digest changes only when published content changes.
     """
     tables=unpack((ROOT/'private/upstream/master-original.db').read_bytes());changes=[]
     for name,rows in tables.items():
@@ -81,7 +84,24 @@ def preserved(year, watch=None):
 
 def preserved_master():
     from birthday_calendar import pinned
-    return preserved(serving_year(),pinned())
+    refresh_schedule_cache()
+    return preserved(serving_year(),pinned(),time.time_ns() // 1_000_000_000 // 86400)
+
+_schedule_cache_key = None
+
+def refresh_schedule_cache():
+    """Advance the in-process masters as well as the downloadable schedule horizon."""
+    global _schedule_cache_key
+    from helpers.cache import cache
+    key = (time.time_ns() // 1_000_000_000 // 86400,
+           id(cache.league_master), id(cache.music_course_master))
+    if key == _schedule_cache_key:
+        return
+    from league_schedule import extend_cache
+    from course_schedule import extend_cache as extend_courses
+    extend_cache()
+    extend_courses()
+    _schedule_cache_key = key
 
 def repair_cached_dates():
     from helpers.cache import cache
@@ -90,6 +110,8 @@ def repair_cached_dates():
         if isinstance(value,list):
             for x in value:walk(x)
         elif hasattr(type(value),'model_fields'):
+            if type(value).__name__ in ('LeagueMaster','TripleCastMaster'):
+                return
             for field,x in list(value.__dict__.items()):
                 if 'end' in field and isinstance(x,str):
                     try:

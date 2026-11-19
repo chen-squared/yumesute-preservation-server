@@ -20,10 +20,10 @@ class BoundApp:
     @asynccontextmanager
     async def acquire_db(self): yield self.conn
 
-async def call_bound(request, s, fn, *args):
+async def call_bound(request, s, fn, *args, **kwargs):
     original = request.scope['app']
     request.scope['app'] = BoundApp(original, s.conn)
-    try: return await fn(request, *args)
+    try: return await fn(request, *args, **kwargs)
     finally: request.scope['app'] = original
 
 def parts(response):
@@ -61,7 +61,7 @@ async def start(request: Request):
         chart = master('live_master', p.live_master_id)
         if not chart or (concert and not m) or (ident and not m and not window) or (
                 m and chart.music_master_id != m.music_master_id) or (
-                window and chart.music_master_id != window.music):
+                window and (chart.music_master_id != window.music or int(chart.difficulty) > window.difficulty)):
             raise Rejected('Invalid stage or chart')
         async with transaction(request) as s:
             if not await s.one('Party', id=p.party_id): raise Rejected('Missing party')
@@ -154,7 +154,7 @@ async def apply_progress(s, mode, ident, score, acts, cleared, result):
 async def finish(request: Request):
     return await settle(request, await read_request(request, FinishLivePayload))
 
-async def settle(request: Request, p):
+async def settle(request: Request, p, *, another_notation_master_id=None):
     """The finish body, for a run whose payload has already been read.
 
     A request body parses under one model only, so a run that arrives on another route -
@@ -167,7 +167,18 @@ async def settle(request: Request, p):
             active = await s.conn.conn.fetchrow('SELECT * FROM active_live WHERE "userId"=$1', s.uid)
             if not active: raise Rejected('No active live')
             context = await s.conn.conn.fetchrow('SELECT * FROM preservation_live_context WHERE "userId"=$1', s.uid)
-            r = parts(await call_bound(request, s, upstream.lives_finish_and_validate, p))
+            alternate = None
+            if context and context['mode'] == 'course':
+                from progression import find_course
+                _, details, index = find_course(context['masterId'])
+                alternate = details[index].another_notation_master_id
+            if another_notation_master_id is not None and (
+                    not alternate or int(alternate) != int(another_notation_master_id)):
+                raise Rejected('Alternate chart is not this course stage')
+            # A meme course plays different charts from the underlying song's own chart.
+            # It advances the course, without granting that song's lamps/rating/drops.
+            r = parts(await call_bound(request, s, upstream.lives_finish_and_validate, p,
+                                       record_live=not bool(alternate)))
             if r[0]: raise Rejected('Live validation failed')
             result = from_array('FinishLiveResult', r[1])
             if context:

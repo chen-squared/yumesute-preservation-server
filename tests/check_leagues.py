@@ -157,7 +157,8 @@ async def main():
         slots = await conn.conn.fetch('SELECT * FROM league_high_score_party_slot WHERE "userId"=$1',
                                       ACCOUNT)
         rivals = await conn.conn.fetch('SELECT "classType",count(*) n FROM preservation_league_rival '
-                                       'WHERE "userId"=$1 AND kind=$2 GROUP BY 1', ACCOUNT, "league")
+                                       'WHERE "userId"=$1 AND kind=$2 AND "masterId"=$3 GROUP BY 1',
+                                       ACCOUNT, "league", live.id)
         counted = await conn.conn.fetchrow('SELECT "missionCurrentCount" FROM mission WHERE "userId"=$1 '
                                            'AND "missionMasterId"=$2', ACCOUNT, 200100)
     assert member["bestScore"] == 1_500_000 and high["musicMasterId"] == live.music
@@ -175,7 +176,8 @@ async def main():
     closed = schedule.official("league")[-1]
     async with app.acquire_db() as conn, conn.transaction():
         state = State(conn, ACCOUNT)
-        await leagues.begin(state, "league", closed)
+        # Seed a past participation explicitly; real starts are rejected once closed.
+        await leagues.join(state, "league", closed)
         cards = await leagues.party_cards(state, party["id"])
         await leagues.post(state, "league", closed, 2_000_000, cards, 3, party["leaderPosition"])
         outcome = await leagues.settle(state, "league", closed)
@@ -217,12 +219,14 @@ async def main():
               f"rank {menu[6]} and the promotion line {menu[8]} ({menu[9]}th place)")
 
         group = await call("POST", f"/api/Leagues/GroupRanking/{live.id}/1")
-        names = {row[5] for row in group[:-1]}
+        own_rows = [row for row in group if row[1] == str(ACCOUNT)]
+        names = {row[5] for row in group if row[1] != str(ACCOUNT)}
         assert len(group) == leagues.RIVAL_COUNT + 1, len(group)
         assert all(name.startswith(leagues.RIVAL_LABEL) for name in names), "unlabelled rival"
-        # The last row is this account: its public id, name and the score it just set.
-        assert group[-1][1] == str(ACCOUNT) and group[-1][2] == 1_500_000, group[-1][:3]
-        assert group[-1][5] == user["name"] and len(group[-1][7]) == 5, group[-1][5]
+        assert len(own_rows) == 1 and own_rows[0][2] == 1_500_000, own_rows
+        assert own_rows[0][5] == user["name"] and len(own_rows[0][7]) == 5
+        assert [row[2] for row in group] == sorted((row[2] for row in group), reverse=True)
+        assert own_rows[0][0] == 1 + sum(row[2] > 1_500_000 for row in group)
         global_rows = await call("POST", f"/api/Leagues/GlobalRanking/{live.id}")
         assert len(global_rows) <= leagues.GLOBAL_PAGE + 1
         triple_menu = await call("POST", "/api/TripleCast/TopMenuInformation")

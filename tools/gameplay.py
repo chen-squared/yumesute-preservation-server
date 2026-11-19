@@ -201,7 +201,14 @@ async def transaction(request):
         raise Rejected("Authentication required")
     async with request.app.acquire_db() as conn, conn.transaction():
         await conn.conn.execute("SELECT pg_advisory_xact_lock($1)", uid)
-        yield State(conn, uid)
+        from preservation_dates import refresh_schedule_cache
+        refresh_schedule_cache()
+        s = State(conn, uid)
+        # A client can stay logged in across 05:00. Rotate before claims and mutations,
+        # rather than waiting for another login which would erase the new day's progress.
+        import missions
+        await missions.rotate(s)
+        yield s
 
 
 async def character_progress(s, base, mission_id, delta):
@@ -240,6 +247,11 @@ async def mission_progress(s, ident, delta=1, *, create=False, absolute=None):
     m = master("mission_master", ident)
     if not m or not m.stages:
         return
+    if int(m.mission_category) in (4, 5):
+        # Market purchases also call this from an upstream transaction, without going
+        # through the local transaction() context manager.
+        import missions
+        await missions.rotate(s)
     row = await s.one("Mission", missionMasterId=ident)
     if not row and not create:
         return
@@ -1040,9 +1052,14 @@ async def grow_rank_cap(s):
     if not user:
         return 0
     highest = max_released_rank()
+    released = await released_gate_ranks(s)
+    # Exported official/local accounts carry the limit, but not our bookkeeping table.
+    # Passing a gate proves it was released; reaching the gate itself does not.
+    released += [r.rank for r in cache.player_rank_master
+                 if r.player_rank_cap_master_id and r.rank < user["playerRankLimit"]]
     target = cap_target(
         await audition_cap_grants(s),
-        released_ceiling(await released_gate_ranks(s), highest),
+        released_ceiling(released, highest),
         highest,
     )
     gained = target - user["playerRankLimit"]
@@ -1086,7 +1103,12 @@ async def sync_rank_cap_state(s):
     user = await s.one("User")
     if not user:
         return
-    if await grow_rank_cap(s):
+    await grow_rank_cap(s)
+    # A cap-up can unlock rank XP already earned while capped, including imported
+    # saves which have no newly granted item left to trigger the live path.
+    if user["playerRank"] < min(user["playerRankLimit"], max_released_rank()):
+        from progression import rank_xp
+        await rank_xp(s, 0)
         user = await s.one("User")
     await sync_cap_flags(s, user)
 
@@ -1127,7 +1149,7 @@ async def release_rank_cap(request: Request):
                 raise Rejected()
             limit = int(user["playerRankLimit"])
             cap_id = gate_at_limit(limit)
-            if cap_id is None or limit in await released_gate_ranks(s):
+            if not is_rank_capped(user) or cap_id is None or limit in await released_gate_ranks(s):
                 raise Rejected()  # no gate on this limit, or the block is already released
             cost = cap_release_cost(cap_id)
             if cost is None:
