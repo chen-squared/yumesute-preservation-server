@@ -32,6 +32,11 @@ was an independent protocol reference, not a second backend merged into this rel
 - Imported rank limits imply gates already passed. Reaching a gate raises its prompt;
   lifting a cap releases banked rank/actor EXP even on a free audition. Rank-up stamina
   may exceed the natural maximum up to 3000, without regenerating above the natural maximum.
+- Stamina rewards include natural recovery before applying the grant. Rewards and rank-up
+  restores above the 3000 stock limit send only the excess to permanent gifts, split into
+  individually claimable quantities for large restores. A stamina gift is received only
+  when its entire quantity fits within 3000; bulk receive leaves non-fitting gifts intact
+  while claiming other eligible rewards. Duplicate/concurrent claims cannot pay twice.
 - Daily/weekly mission rotation also runs during gameplay, including claims after a
   reset. Failed score records cannot turn into rating on a later weaker clear.
   Alternate-chart courses no longer write ordinary chart lamps, rates or drops.

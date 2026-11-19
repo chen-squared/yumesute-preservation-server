@@ -7,6 +7,14 @@ with current local progress, for initial imports, recovered accounts and fresh a
 The database check below also runs the actual command-line exporter and compares its ZIP
 with the web snapshot, and checks a real extra-light card's live unit and timing schedules.
 
+`check_stamina_rewards.py --database yumesute_review_checks_<suffix>` requires another
+disposable copy of a prepared save. It intentionally changes that copy: partial/full
+overflow from the free pack, permanent gifts, natural recovery, exact-cap and blocked
+claims, large/multi-level rewards without loss, mixed bulk claims, duplicate/concurrent
+claims and rollback on an injected gift-insert failure. It verifies the connected database
+and refuses other name prefixes. Recreate the clone before rerunning and drop it afterwards;
+never run it against an account you intend to keep.
+
 `check_review_regressions.py --database yumesute_review_checks_<suffix>` requires a
 disposable copy of a prepared save with a five-slot party and Triple Cast parties.
 It refuses other database names and verifies the connected database before running.

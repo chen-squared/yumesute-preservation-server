@@ -186,6 +186,8 @@ async def purchase(request: Request):
             await missions.free_pack(s)
         counted = s.present()
         refresh = {present_type(int(r.type)) for r in received} | {"JewelShop"}
+        if any(r.sent_inbox for r in received):
+            refresh.add('Inbox')
         refresh.discard(None)
 
     present = await build_present(app, user_id, *sorted(refresh))

@@ -124,6 +124,8 @@ class RankCaps(unittest.IsolatedAsyncioTestCase):
                 await progression.rank_xp(s, 0)
             user = await s.one('User')
             self.assertEqual(user['currentStamina'], min(3000, held + max_stamina(101)))
+            self.assertEqual(sum(g['thingQuantity'] for g in await s.rows('Inbox')),
+                             max(0, held + max_stamina(101) - 3000))
             self.assertEqual(effective_stamina(user['currentStamina'], user['maxStaminaRestoredAt'],
                                               max_stamina(101), user['maxStaminaRestoredAt'] + 86400_000000),
                              user['currentStamina'])

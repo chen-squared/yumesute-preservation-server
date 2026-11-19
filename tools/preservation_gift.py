@@ -7,12 +7,12 @@ from db.user import upsert_inbox, get_inboxes_by_ids, receive_inbox
 from helpers.things import grant_thing, present_type
 from helpers.user_data import build_present, current_user_id
 from helpers.msgpack import respond
-from models import InboxReceiveResult
+from models import InboxReceiveResult, ReceivedThing
+from models.enums import ThingTypes
+from stamina_compat import NO_EXPIRY, receive_stamina
 
 ROOT = Path(__file__).resolve().parents[1]
 EVENT = 'song-tickets-v1'
-# Captured official no-time-limit Inbox sentinel; zero can be filtered as expired.
-NO_EXPIRY = 4102358400000000
 
 def quantity():
     value = json.loads((ROOT/'preservation-rules.json').read_text()).get('preservation_song_tickets', 10000)
@@ -42,17 +42,27 @@ async def receive(app, uid, inbox_ids):
     result = InboxReceiveResult(received_things=[],has_not_receive_things=False)
     if uid is None or not ids:
         return respond(result)
-    now = int(time.time()*1000000)
     types, received_ids = set(), set()
     async with app.acquire_db() as c, c.transaction():
         await c.conn.execute('SELECT pg_advisory_xact_lock($1::bigint)',uid)
-        for row in await c.fetch(get_inboxes_by_ids(uid,ids)):
-            if row.hasReceived:
+        now = time.time_ns()//1000
+        by_id = {row.id: row for row in await c.fetch(get_inboxes_by_ids(uid,ids))}
+        for ident in ids:
+            row = by_id.get(ident)
+            if row is None or row.hasReceived:
                 continue
             if row.isTimeLimited and row.receiveLimitAt and row.receiveLimitAt < now:
                 result.has_not_receive_things=True
                 continue
-            result.received_things.append(await grant_thing(c,uid,row.thingType,row.thingId,row.thingQuantity))
+            if row.thingType == int(ThingTypes.Stamina):
+                if not await receive_stamina(c,uid,row.thingQuantity,now):
+                    result.has_not_receive_things=True
+                    continue
+                received = ReceivedThing(type=ThingTypes.Stamina,id_=row.thingId,
+                                         quantity=row.thingQuantity,sent_inbox=False)
+            else:
+                received = await grant_thing(c,uid,row.thingType,row.thingId,row.thingQuantity)
+            result.received_things.append(received)
             await c.execute(receive_inbox(uid,row.id,now))
             received_ids.add(row.id)
             pt=present_type(row.thingType)

@@ -161,6 +161,8 @@ class State:
         from helpers.things import present_type
 
         names = {present_type(t) for t, _, _ in things} - {None}
+        if any(int(t) == int(ThingTypes.Stamina) for t, _, _ in things):
+            names.add('Inbox')
         snapshots = {
             name: {r["id"]: r.copy() for r in await self.rows(name)} for name in names
         }
@@ -1401,6 +1403,8 @@ def install(app):
     live_finish.install()
     import things_compat
     things_compat.install()
+    import stamina_compat
+    stamina_compat.install()
     import photo_preservation
     photo_preservation.install(app)
     import customization

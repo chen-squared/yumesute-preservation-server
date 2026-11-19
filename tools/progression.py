@@ -188,9 +188,12 @@ async def rank_xp(s,amount):
         # Rank-up restores may overfill the natural maximum, up to the game's 3000
         # stock limit. Evaluate recovery against the OLD rank first: increasing max
         # without rescheduling its timestamp would also manufacture passive stamina.
-        stamina_after=min(3000,stamina+restore)
+        from stamina_compat import STAMINA_LIMIT, overflow_packages
+        stamina_after=min(STAMINA_LIMIT,stamina+restore)
         await s.update('User',row,currentStamina=stamina_after,
                        maxStaminaRestoredAt=restored_at(stamina_after,max_stamina(rank),now))
+        for package in overflow_packages(stamina+restore-stamina_after,now):
+            await s.insert('Inbox',**package)
     if rank!=before:
         for ident in (1000,1100):await mission_progress(s,ident,absolute=rank)
         await cash_level_banks(s,row)
