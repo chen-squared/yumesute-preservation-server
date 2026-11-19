@@ -73,7 +73,8 @@ async def user_data(app,uid):
     await ensure_gift(app, uid)
     from starter_music import ensure_starter_music
     await ensure_starter_music(app, uid, ACCOUNT)
-    return await export_user_data(app,uid)
+    from league_history import for_client
+    return for_client(await export_user_data(app,uid))
 
 async def export_user_data(app,uid):
     return await snapshot(app,uid,root=ROOT,account=ACCOUNT)

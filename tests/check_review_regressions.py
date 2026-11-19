@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import zipfile
+from unittest.mock import patch
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -45,6 +46,7 @@ async def main(name):
     import music_courses
     import course_schedule
     import progression
+    import leagues
     from helpers.auth import make_session_jwt
     from helpers.cache import cache
     from helpers.live_rate import chart_live_rate
@@ -53,6 +55,7 @@ async def main(name):
                         StartTripleCastLivePayload, TripleCastPartyScore)
     from models.keys import KEYS
     from models.enums import TimingTypes
+    from models.unions import IDATA_OBJECT_KEY
     from protocol import envelope, expand, unpack_stream
 
     app = serve.app
@@ -128,6 +131,80 @@ async def main(name):
                         schedule = await build_live_time_event(conn, uid, party, chart.music_master_id)
                         assert {t.timing_seconds: to_wire(t.event) for t in schedule.timings} == {
                             second: to_wire(event) for second, event in unit.time_events.items()}
+
+                    async def league_reentry():
+                        # Match the device flow: play -> return to live top -> enter
+                        # league again -> request previous rewards, then log in again.
+                        # An unfinished history must never reach GetLeagueHistory's
+                        # FirstOrDefault and its previous-period result popup.
+                        for kind, prefix in (('league', 'Leagues'), ('triple_cast', 'TripleCast')):
+                            await reset_live()
+                            spec = leagues.SPEC[kind]
+                            for name in ('member', 'history', 'group', 'party_slot', 'party'):
+                                await conn.conn.execute(f'DELETE FROM "{leagues._table(spec[name])}" '
+                                                        'WHERE "userId"=$1', uid)
+                            previous = league_schedule.anchor(kind)
+                            await leagues.write(gameplay.State(conn, uid), spec['history'],
+                                {spec['window']: previous.id}, dict(classType=2, historyCount=1,
+                                isSendedReward=True, isPlayed=True, classChangeType=1,
+                                groupRank=99, globalRank=99, allClassGlobalRank=99))
+                            window = league_schedule.live(kind)
+                            chart = next(c for c in cache.live_master if c.music_master_id == window.music
+                                         and int(c.difficulty) == 4)
+                            if kind == 'league':
+                                opened = await post('/api/Lives/Start', StartLivePayload(
+                                    party_id=party, live_master_id=chart.id_, league_master_id=window.id))
+                            else:
+                                opened = await post('/api/Lives/StartTripleCastLive', StartTripleCastLivePayload(
+                                    m_live_id=chart.id_, m_triple_cast_id=window.id))
+                            finished = await post('/api/Lives/FinishAndValidate', finish_payload(TimingTypes.PERFECT_STAR))
+                            tag = IDATA_OBJECT_KEY[spec['history']]
+                            fields = {field: key for key, field, *_ in KEYS[spec['history']]}
+                            for response in (opened, finished):
+                                assert not any(item and item[0] == tag for item in response[2]), \
+                                    'Playing published an unfinished previous-period result'
+                            stored = await leagues.history(gameplay.State(conn, uid), kind, window)
+                            assert stored['isPlayed'] and not stored['isSendedReward']
+                            assert stored['classChangeType'] == 0
+                            score = await leagues.member(gameplay.State(conn, uid), kind, window)
+                            assert score['bestScore'] > 0, 'Reentry fix lost the current score'
+                            # Backup output keeps every raw record, including unfinished
+                            # bookkeeping; only the game view is projected.
+                            exported = await serve.export_user_data(app, uid)
+                            assert any(item and item[0] == tag and item[1][0] == window.id
+                                       for item in exported)
+                            for _ in range(2):
+                                await post(f'/api/{prefix}/TopMenuInformation')
+                                rewards = await client.get(f'/api/{prefix}')
+                                data = envelope(rewards.content)
+                                assert not any(data[1][n] for n in (0, 2, 3, 5)), 'Open window paid final rewards'
+                                user = envelope((await client.get('/api/data/user')).content)[1]
+                                shown = [item[1] for item in user if item and item[0] == tag]
+                                assert len(shown) == 1 and shown[0][0] == previous.id, \
+                                    'Relogin restored the ungraded popup history'
+                            # At period close, the real payout must still publish a valid
+                            # previous result and remain paid exactly once on reentry.
+                            with patch.object(league_schedule, 'closed', return_value=[window]), \
+                                 patch.object(leagues, '_now', return_value=window.display_end + 1):
+                                # The prior paid result would make the device skip
+                                # the reward call unless the menu first publishes
+                                # the newly completed, still-unpaid result.
+                                prepared = await post(f'/api/{prefix}/TopMenuInformation')
+                                shown = [values for entity, values in prepared[2] if entity == tag]
+                                assert len(shown) == 1 and shown[0][0] == window.id
+                                assert not shown[0][fields['is_sended_reward']]
+                                assert shown[0][fields['class_change_type']] in (1, 2, 3)
+                                refreshed = await post(f'/api/{prefix}/TopMenuInformation')
+                                assert [v for t, v in refreshed[2] if t == tag] == shown, \
+                                    'An already prepared result was not discoverable on reentry'
+                                payout = envelope((await client.get(f'/api/{prefix}')).content)
+                                shown = [values for entity, values in payout[2] if entity == tag]
+                                assert len(shown) == 1 and shown[0][fields['class_change_type']] in (1, 2, 3)
+                                again = envelope((await client.get(f'/api/{prefix}')).content)
+                                assert not any(again[1][n] for n in (0, 2, 3, 5)), 'Closed window paid twice'
+                            user = envelope((await client.get('/api/data/user')).content)[1]
+                            shown = [item[1] for item in user if item and item[0] == tag]
+                            assert len(shown) == 1 and shown[0][0] == window.id
 
                     async def claim_after_boundary():
                         # Yesterday's completed daily cannot be claimed as today's reward.
@@ -339,7 +416,7 @@ async def main(name):
                                 assert [p[party_fields['score']] for p in parties] == [674, 673, 673]
                                 assert sum(p[party_fields['score']] for p in parties) == own[fields['best_score']]
 
-                    for case in (compatible_exports, effect_schedules,
+                    for case in (compatible_exports, effect_schedules, league_reentry,
                                  claim_after_boundary, imported_rank_cap, failed_rating,
                                  alternate_course, closed_league, rank_up_stamina, weekly_rewards,
                                  league_master_and_difficulties):

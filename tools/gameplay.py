@@ -191,9 +191,10 @@ class State:
             await sync_cap_flags(self, user)
 
     def present(self):
-        return [
+        from league_history import for_client
+        return for_client([
             [IDATA_OBJECT_KEY[n], _to_array(n, r)] for (n, _), r in self.dirty.items()
-        ]
+        ])
 
 
 @asynccontextmanager

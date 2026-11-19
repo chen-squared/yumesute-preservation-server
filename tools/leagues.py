@@ -653,7 +653,7 @@ async def result_fields(s, kind, window, board):
 
 
 def recorded_outcome(row):
-    """A history row the official server already graded keeps its official numbers.
+    """A graded history keeps its assigned ranks while payment is pending.
 
     The recovered save has exactly this shape: ranks and a class change recorded, but
     ``isSendedReward`` still false because the service stopped before the payout.
@@ -789,6 +789,34 @@ async def push(s, kind, only_official=False):
     return merged
 
 
+async def prepare_closed(s, kind):
+    """Publish completed results without granting their rewards on login/menu fetch.
+
+    The client checks its first history's isSendedReward before requesting payment.
+    A new completed result must replace an older paid one in that view; an open
+    window's bookkeeping stays private until its final ranks have been assigned.
+    """
+    spec = SPEC[kind]
+    for window in sorted(schedule.closed(spec['schedule']), key=lambda w: w.display_end):
+        row = await history(s, kind, window)
+        if not row or row['isSendedReward'] or recorded_outcome(row):
+            continue
+        outcome = await settle(s, kind, window)
+        if outcome is not None:
+            await write(s, spec['history'], {spec['window']: window.id},
+                        {'classChangeType': outcome['change'], 'groupRank': outcome['group_rank'],
+                         'globalRank': outcome['global_rank'],
+                         'allClassGlobalRank': outcome['all_class_global_rank'],
+                         'classType': outcome['class_type']})
+    # A different login may already have prepared this result. Refresh the menu
+    # caller's cached singleton even when nothing changed in this transaction.
+    latest = max((row for row in await s.rows(spec['history'])
+                  if row['classChangeType'] in (1, 2, 3) and row['classType'] in CLASSES),
+                 key=lambda row: row[spec['window']], default=None)
+    if latest is not None:
+        s.dirty[(spec['history'], latest[spec['window']])] = latest
+
+
 # --- routes ---------------------------------------------------------------------------
 
 
@@ -797,8 +825,10 @@ async def _top_menu(request, kind):
     if window is None:
         return respond(LeagueTopMenuInformationResult())
     async with transaction(request) as s:
+        await prepare_closed(s, kind)
         joined = await group(s, kind, window)
         board = await standings(s, kind, window) if joined else None
+        present = s.present()
     borders = (board or {}).get('borders', {})
     return respond(LeagueTopMenuInformationResult(
         display_start_at=schedule.iso(window.display_start),
@@ -813,7 +843,7 @@ async def _top_menu(request, kind):
         group_lowest_rank=(board or {}).get('group_size'),
         is_participated=bool(joined),
         enrolled_group_number=1 if joined else None,
-    ))
+    ), present=present)
 
 
 @router.post('/api/Leagues/TopMenuInformation', name='Leagues_GetTopMenuInformation')

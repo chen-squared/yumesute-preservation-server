@@ -25,6 +25,10 @@ was an independent protocol reference, not a second backend merged into this rel
   achievement/lamp/play-count records without adding live rating or Olivier SpRate.
 - Fixed Triple Cast timing-event serialization, ranking order/cut lines and best-run
   party snapshots. Unclaimed league rewards remain resolvable after a long absence.
+- Fixed the empty previous-result popup after playing a league and entering it again.
+  The game now receives only the latest graded history per ladder; in-progress records
+  remain in storage and save exports. Closed results are prepared on login/menu fetch
+  without paying early, then claimed once through the league's own reward screen.
 - Weekly ranking rewards are paid once after the course closes, using the final best
   record, on the next login/user-data refresh. Best note counts stay with that record.
   Added the top/near ranking APIs, corrected local record timestamp units and prevented

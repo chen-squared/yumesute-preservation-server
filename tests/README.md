@@ -6,6 +6,11 @@ Run from the repository root: `uv run --locked python -m unittest discover -s te
 with current local progress, for initial imports, recovered accounts and fresh accounts.
 The database check below also runs the actual command-line exporter and compares its ZIP
 with the web snapshot, and checks a real extra-light card's live unit and timing schedules.
+`test_league_history.py` checks the client history projection: unfinished records are
+hidden, the latest graded result wins regardless of database row order, and valid paid
+and unpaid results remain visible. The database check exercises both ladders through
+play, exit/reentry, user-data reload, and a period close with an older paid history;
+the current score/export stay intact and the completed result still pays exactly once.
 
 `check_stamina_rewards.py --database yumesute_review_checks_<suffix>` requires another
 disposable copy of a prepared save. It intentionally changes that copy: partial/full

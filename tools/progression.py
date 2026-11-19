@@ -55,6 +55,10 @@ async def refresh_daily(app,uid):
         import leagues
         await leagues.push(s, 'league', only_official=True)
         await leagues.push(s, 'triple_cast', only_official=True)
+        # Make locally completed results discoverable, leaving payment to the
+        # league screen so its result/reward flow can run once.
+        await leagues.prepare_closed(s, 'league')
+        await leagues.prepare_closed(s, 'triple_cast')
         import music_courses
         await music_courses.pay_closed(s)
 
