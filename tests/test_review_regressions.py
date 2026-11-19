@@ -26,6 +26,36 @@ import gameplay
 import leagues
 import music_courses
 import progression
+import live_parity
+
+
+class EffectSchedules(unittest.IsolatedAsyncioTestCase):
+    async def test_talent_bloom_extra_light_reaches_both_schedules(self):
+        # This real card's phase-zero trait grants an extra special light (effect 29201).
+        cm = gameplay.master('character_master', 141020)
+        ch = SimpleNamespace(id=11, characterMasterId=cm.id_, characterBaseId=21,
+                             secondaryCharacterBaseId=None, level=100, talentStage=0,
+                             senseLevel=1, awakeningPhase=0, readEpisodeOrder=0,
+                             displayAwakeningStatus=False, secondarySenseLevel=0, selectionType=1)
+        base = SimpleNamespace(id=21, characterBaseMasterId=cm.character_base_master_id, starRank=1)
+        slot = SimpleNamespace(partyId=1, position=1, characterId=11, accessoryId=None,
+                               posterId=None, bonusAbilityEnableFlags=0)
+        rows = {'CharacterModel': [ch], 'CharacterBaseModel': [base], 'PartySlotModel': [slot],
+                'PartyModel': [SimpleNamespace(id=1, leaderPosition=1)]}
+
+        async def fetch(query):
+            return rows.get(query.model.__name__, [])
+
+        conn = SimpleNamespace(fetch=fetch)
+        chart = next(m for m in gameplay.cache.live_master if m.difficulty == 3)
+        unit, _ = await live_parity.build_live_unit(conn, 7, 1, chart.id_)
+        sm = gameplay.master('sense_master', cm.sense_master_id)
+        self.assertEqual(len(unit.possible_senses[0].acquirable_lights), sm.light_count + 1)
+        first = next(event for second, event in sorted(unit.time_events.items()) if second > 0)
+        self.assertEqual(first.acquirable_lights, unit.possible_senses[0].acquirable_lights)
+        schedule = await live_parity.build_live_time_event(conn, 7, 1, chart.music_master_id)
+        self.assertEqual({t.timing_seconds: to_wire(t.event) for t in schedule.timings},
+                         {second: to_wire(event) for second, event in unit.time_events.items()})
 
 
 class MemoryState:

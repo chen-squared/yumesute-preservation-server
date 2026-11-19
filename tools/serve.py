@@ -19,13 +19,10 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, Response
 from helpers.auth import make_session_jwt, make_jwt
 from helpers.msgpack import read_request, respond, fault
-from helpers.user_data import user_data as database_user_data
-from helpers.mastermemory import from_json
 from db.account import get_account_by_id, update_account_token
 from models import AuthenticateResult, MasterDataManifest, TakeOverAccountPayload, TakeOverAccountResult
-from scripts._sirius import _unpack_all, _decompress
 from preservation_dates import preserved_master
-from account_compat import merge_account
+from account_snapshot import snapshot
 from circle_compat import install as install_circle_compat
 from room_compat import install as install_room_compat
 from music_bookmark_compat import install as install_music_bookmark_compat
@@ -79,13 +76,7 @@ async def user_data(app,uid):
     return await export_user_data(app,uid)
 
 async def export_user_data(app,uid):
-    current=await database_user_data(app,uid)
-    current=await RECOVERY.merge(uid,current)
-    if uid != ACCOUNT['user_id'] or ACCOUNT['mode']!='import': return current
-    raw=(ROOT/'private/account-snapshot/user-data.response.bin').read_bytes()
-    original=[_decompress(x) for x in _unpack_all(raw)][1]
-    baseline=from_json(json.loads((ROOT/'private/imported-user-roundtrip.json').read_text()))
-    return merge_account(original,baseline,current)
+    return await snapshot(app,uid,root=ROOT,account=ACCOUNT)
 
 routes.account.authenticate=authenticate
 routes.data.user_data=user_data

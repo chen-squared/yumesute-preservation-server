@@ -35,6 +35,11 @@ was an independent protocol reference, not a second backend merged into this rel
 - Daily/weekly mission rotation also runs during gameplay, including claims after a
   reset. Failed score records cannot turn into rating on a later weaker clear.
   Alternate-chart courses no longer write ordinary chart lamps, rates or drops.
+- Command-line and web save exports now share the capture-compatibility merge, retaining
+  null markers, trailing fields and wire value types while applying current local progress.
+- Live units and skill timing schedules now use the same actor effects, including
+  talent-bloom extra lights. Previously those lights appeared in the unit but were
+  omitted from the schedule that determines Star Act timing.
 - **Server-tested:** unit regressions plus PostgreSQL/HTTP checks on disposable save
   copies cover these changes. Calendar/menu/cover resources and high-difficulty starts
   were checked together. iPad screen rendering and actual high-difficulty play still

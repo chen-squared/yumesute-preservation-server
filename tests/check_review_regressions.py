@@ -6,8 +6,13 @@ may create overlay tables in that clone. Never pass the live database.
 """
 import argparse
 import asyncio
+import contextlib
+import importlib.util
+import io
 import sys
+import tempfile
 import time
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -83,6 +88,46 @@ async def main(name):
                     async def reset_live():
                         for table in ('active_live', 'preservation_live_context', 'preservation_course_run'):
                             await conn.conn.execute(f'DELETE FROM {table} WHERE "userId"=$1', uid)
+
+                    async def compatible_exports():
+                        from helpers.user_data import user_data
+                        before = pack(await user_data(app, uid))
+                        expected = pack(await serve.export_user_data(app, uid))
+                        spec = importlib.util.spec_from_file_location(
+                            'export_local_account', ROOT / 'local/export_local_account.py')
+                        cli = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(cli)
+                        with tempfile.TemporaryDirectory() as folder:
+                            # Exercise the actual command-line implementation and its
+                            # independent read-only connection, not another copy of the helper.
+                            with contextlib.redirect_stdout(io.StringIO()):
+                                await asyncio.to_thread(cli.run, Path(folder), uid)
+                            files = list(Path(folder).glob('*.zip'))
+                            assert len(files) == 1
+                            with zipfile.ZipFile(files[0]) as archive:
+                                actual = envelope(archive.read('user-data.response.bin'))[1]
+                            assert pack(actual) == expected, 'CLI export lost captured wire layout'
+                        assert pack(await user_data(app, uid)) == before, 'Export changed local progress'
+
+                    async def effect_schedules():
+                        from helpers.live import build_live_unit, build_live_time_event
+                        from helpers.msgpack import to_wire
+                        slot = await conn.conn.fetchrow('SELECT * FROM party_slot WHERE "userId"=$1 '
+                                                        'AND "partyId"=$2 AND "position"=1', uid, party)
+                        assert slot and slot['characterId']
+                        await conn.conn.execute('UPDATE "character" SET "characterMasterId"=141020, '
+                                                '"talentStage"=0 WHERE "userId"=$1 AND id=$2',
+                                                uid, slot['characterId'])
+                        await conn.conn.execute('UPDATE party_slot SET "posterId"=NULL,"accessoryId"=NULL '
+                                                'WHERE "userId"=$1 AND id=$2', uid, slot['id'])
+                        chart = next(m for m in cache.live_master if m.difficulty == 3)
+                        unit, _ = await build_live_unit(conn, uid, party, chart.id_)
+                        sense = next(s for s in unit.possible_senses if s.actor_id == slot['characterId'])
+                        events = [e for e in unit.time_events.values() if sense.id_ in e.sense_ids]
+                        assert events and all(e.acquirable_lights == sense.acquirable_lights for e in events)
+                        schedule = await build_live_time_event(conn, uid, party, chart.music_master_id)
+                        assert {t.timing_seconds: to_wire(t.event) for t in schedule.timings} == {
+                            second: to_wire(event) for second, event in unit.time_events.items()}
 
                     async def claim_after_boundary():
                         # Yesterday's completed daily cannot be claimed as today's reward.
@@ -294,7 +339,8 @@ async def main(name):
                                 assert [p[party_fields['score']] for p in parties] == [674, 673, 673]
                                 assert sum(p[party_fields['score']] for p in parties) == own[fields['best_score']]
 
-                    for case in (claim_after_boundary, imported_rank_cap, failed_rating,
+                    for case in (compatible_exports, effect_schedules,
+                                 claim_after_boundary, imported_rank_cap, failed_rating,
                                  alternate_course, closed_league, rank_up_stamina, weekly_rewards,
                                  league_master_and_difficulties):
                         tx = conn.transaction()

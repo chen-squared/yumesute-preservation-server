@@ -244,18 +244,49 @@ def _party_composition(slots, chars, character_master, sense_master) -> dict:
     return party_composition(members)
 
 
-def _position_senses(
-    slots,
-    chars,
-    character_master,
-    sense_master,
-    star_act_master,
-    accessories,
-    posters=None,
-    comp=None,
-) -> dict:
+def _collect_party_effects(slots, chars, character_master, sense_master, star_act_master,
+                           accessories, posters, leader_position, album_level, comp):
+    """Collect each source once; both live builders use the same effect set."""
+    leader_slot = next((s for s in slots if s.position == leader_position), None)
+    leader_ch = chars.get(leader_slot.characterId) if leader_slot else None
+    leader_cm = character_master.get(leader_ch.characterMasterId) if leader_ch else None
+    slot_effects = {}
+    party_all = album_effects(album_level, comp)
+    for slot in slots:
+        ch = chars.get(slot.characterId)
+        cm = character_master.get(ch.characterMasterId) if ch else None
+        sm = sense_master.get(cm.sense_master_id) if cm else None
+        sam = star_act_master.get(cm.star_act_master_id) if cm else None
+        effects = collect_slot_effects(
+            sm, sam, ch.senseLevel if ch else 0, accessories.get(slot.accessoryId),
+            posters.get(slot.posterId), comp, slot.bonusAbilityEnableFlags,
+            is_leader=(slot.position == leader_position),
+        )
+        if cm is not None and ch is not None:
+            effects += bloom_effects(cm.bloom_bonus_group_master_id, ch.talentStage, comp)
+        if leader_cm is not None and cm is not None:
+            effects += leader_sense_effects(leader_cm, cm)
+        slot_effects[slot.position] = effects
+        party_all += range_split(effects)[1]
+    return slot_effects, party_all
+
+
+def _effective_slot_effects(cm, sm, own, party_all, circle_levels, comp):
+    cbm = _by_id('character_base_master').get(cm.character_base_master_id) if cm else None
+    actor = {
+        'character_master_id': cm.id_ if cm else 0,
+        'character_base_master_id': cbm.id_ if cbm else 0,
+        'company': cbm.company_master_id if cbm else 0,
+        'attribute': int(cm.attribute) if cm and cm.attribute is not None else 0,
+        'sense_type': int(sm.type) if sm and sm.type is not None else 0,
+    }
+    circle = circle_effects(cbm.company_master_id, circle_levels, comp) if cbm else []
+    return (filter_target_effects(range_split(own)[0], actor)
+            + filter_target_effects(party_all, actor) + circle)
+
+
+def _position_senses(slots, chars, character_master, sense_master, effects_by_position) -> dict:
     """position -> firing-sense info (id/master/cool_time/lights) incl. effect-added lights."""
-    posters = posters or {}
     pos_sense: dict = {}
     for slot in slots:
         ch = chars.get(slot.characterId)
@@ -265,16 +296,7 @@ def _position_senses(
         sm = sense_master.get(cm.sense_master_id) if cm else None
         if cm is None or sm is None:
             continue
-        sam = star_act_master.get(cm.star_act_master_id) if cm else None
-        effects = collect_slot_effects(
-            sm,
-            sam,
-            ch.senseLevel,
-            accessories.get(slot.accessoryId),
-            posters.get(slot.posterId),
-            comp,
-            slot.bonusAbilityEnableFlags,
-        )
+        effects = effects_by_position.get(slot.position, [])
         cancel_sense = any(
             getattr(e.master, "type", None) == EffectTypes.FinalPerformanceUpCancelSense
             for e in effects
@@ -453,12 +475,14 @@ async def build_live_time_event(
 ) -> LiveTimeEvent:
     """Sense timing schedule for a live. ``sense_notation_master_id=None`` -> normal live
     (spread over the song duration); otherwise from ``SenseNotationMaster.details``."""
-    slots = [
+    slots = sorted([
         s for s in await conn.fetch(get_party_slots(user_id)) if s.partyId == party_id
-    ]
+    ], key=lambda s: s.position)
     chars = {c.id: c for c in await conn.fetch(get_characters(user_id))}
     accessories = {a.id: a for a in await conn.fetch(get_accessorys(user_id))}
     posters = {p.id: p for p in await conn.fetch(get_posters(user_id))}
+    album_level = next((a.level for a in await conn.fetch(get_albums(user_id))), 0)
+    circle_levels = {cs.company: cs.level for cs in await conn.fetch(get_circle_supports(user_id))}
     leader_position = next(
         (
             p.leaderPosition
@@ -470,15 +494,9 @@ async def build_live_time_event(
     character_master = _by_id("character_master")
     sense_master = _by_id("sense_master")
     comp = _party_composition(slots, chars, character_master, sense_master)
-    pos_sense = _position_senses(
-        slots,
-        chars,
-        character_master,
-        sense_master,
-        _by_id("star_act_master"),
-        accessories,
-        posters,
-        comp,
+    slot_effects, party_all = _collect_party_effects(
+        slots, chars, character_master, sense_master, _by_id('star_act_master'),
+        accessories, posters, leader_position, album_level, comp,
     )
     music = _by_id("music_master").get(music_master_id)
     duration = music.music_time_second if music is not None else 0
@@ -488,33 +506,19 @@ async def build_live_time_event(
         else None
     )
     initial_lights: list = []
-    leader_effects: list = []
+    effective = {}
     for s in slots:
         ch = chars.get(s.characterId)
         cm = character_master.get(ch.characterMasterId) if ch else None
         sm = sense_master.get(cm.sense_master_id) if cm else None
-        sam = _by_id("star_act_master").get(cm.star_act_master_id) if cm else None
-        effs = collect_slot_effects(
-            sm,
-            sam,
-            ch.senseLevel if ch else 0,
-            accessories.get(s.accessoryId),
-            posters.get(s.posterId),
-            comp,
-            s.bonusAbilityEnableFlags,
-            is_leader=(s.position == leader_position),
-        )
-        if cm is not None and ch is not None:
-            effs = effs + bloom_effects(
-                cm.bloom_bonus_group_master_id, ch.talentStage, comp
-            )
-        if s.position == leader_position:
-            leader_effects = effs
-        initial_lights += start_lights(effs, sm.type if sm else 0)
+        effective[s.position] = _effective_slot_effects(
+            cm, sm, slot_effects[s.position], party_all, circle_levels, comp)
+        initial_lights += start_lights(slot_effects[s.position], sm.type if sm else 0)
     initial_lights = initial_lights[:10]
     condition = _star_act_condition(
-        slots, chars, character_master, leader_position, leader_effects
+        slots, chars, character_master, leader_position, slot_effects.get(leader_position, [])
     )
+    pos_sense = _position_senses(slots, chars, character_master, sense_master, effective)
     return _live_time_event(pos_sense, duration, snm, condition, initial_lights)
 
 
@@ -547,41 +551,15 @@ async def build_live_unit(conn, user_id: int, party_id: int, live_master_id: int
         ),
         1,
     )
-    leader_slot = next((s for s in slots if s.position == leader_position), None)
-    leader_ch = chars.get(leader_slot.characterId) if leader_slot else None
-    leader_cm = character_master.get(leader_ch.characterMasterId) if leader_ch else None
     comp = _party_composition(slots, chars, character_master, sense_master)
 
     # pass 1: collect each slot's full effects and aggregate All-range effects across the party
     # (a Leader poster boosts everyone). Self/None effects stay slot-local. Album effects are
     # party-wide (unlocked by album level).
-    slot_effects: dict = {}
-    party_all: list = album_effects(album_level, comp)
-    for slot in slots:
-        ch = chars.get(slot.characterId)
-        cm = character_master.get(ch.characterMasterId) if ch else None
-        sm = sense_master.get(cm.sense_master_id) if cm else None
-        sam = star_act_master.get(cm.star_act_master_id) if cm else None
-        eff = collect_slot_effects(
-            sm,
-            sam,
-            ch.senseLevel if ch else 0,
-            accessories.get(slot.accessoryId),
-            posters.get(slot.posterId),
-            comp,
-            slot.bonusAbilityEnableFlags,
-            is_leader=(slot.position == leader_position),
-        )
-        if (
-            cm is not None and ch is not None
-        ):  # talent-bloom effects (phase <= talentStage)
-            eff = eff + bloom_effects(
-                cm.bloom_bonus_group_master_id, ch.talentStage, comp
-            )
-        if leader_cm is not None and cm is not None:
-            eff = eff + leader_sense_effects(leader_cm, cm)
-        slot_effects[slot.position] = eff
-        party_all += range_split(eff)[1]
+    slot_effects, party_all = _collect_party_effects(
+        slots, chars, character_master, sense_master, star_act_master, accessories,
+        posters, leader_position, album_level, comp,
+    )
 
     # MaxPrincipal = base + the party's passive PrincipalGaugeLimitUp effects (each counted once:
     # party-wide All-range + every slot's own effects).
@@ -597,6 +575,7 @@ async def build_live_unit(conn, user_id: int, party_id: int, live_master_id: int
     senses: list = []
     start_effects_all: list = []
     star_act = StarAct()
+    effective = {}
     for slot in slots:
         ch = chars.get(slot.characterId)
         if ch is None:
@@ -611,24 +590,8 @@ async def build_live_unit(conn, user_id: int, party_id: int, live_master_id: int
         sm = sense_master.get(cm.sense_master_id) if cm else None
         sam = star_act_master.get(cm.star_act_master_id) if cm else None
         full = slot_effects.get(slot.position, [])
-        cbm = (
-            _by_id("character_base_master").get(cm.character_base_master_id)
-            if cm
-            else None
-        )
-        ch_dict = {
-            "character_master_id": cm.id_ if cm else 0,
-            "character_base_master_id": cbm.id_ if cbm else 0,
-            "company": cbm.company_master_id if cbm else 0,
-            "attribute": int(cm.attribute) if cm and cm.attribute is not None else 0,
-            "sense_type": int(sm.type) if sm and sm.type is not None else 0,
-        }
-        matched_party = filter_target_effects(party_all, ch_dict)
-        matched_own = filter_target_effects(range_split(full)[0], ch_dict)
-        circle = (
-            circle_effects(cbm.company_master_id, circle_levels, comp) if cbm else []
-        )
-        effects = matched_own + matched_party + circle
+        effects = _effective_slot_effects(cm, sm, full, party_all, circle_levels, comp)
+        effective[slot.position] = effects
 
         # intrinsic factor (percent points on the char base): awakening phase (10%/phase) +
         # star rank status bonus + bloom BaseCorrection effects.
@@ -738,14 +701,7 @@ async def build_live_unit(conn, user_id: int, party_id: int, live_master_id: int
     # TimeEvents is keyed by the timing second; the value is that window's TimingEvent.
     music = _by_id("music_master").get(lm.music_master_id) if lm is not None else None
     pos_sense = _position_senses(
-        slots,
-        chars,
-        character_master,
-        sense_master,
-        star_act_master,
-        accessories,
-        posters,
-        comp,
+        slots, chars, character_master, sense_master, effective,
     )
     leader_effects = slot_effects.get(leader_position, [])
     condition = _star_act_condition(

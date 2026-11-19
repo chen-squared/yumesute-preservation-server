@@ -2,6 +2,11 @@
 
 Run from the repository root: `uv run --locked python -m unittest discover -s tests -v`.
 
+`test_account_snapshot.py` covers captured null entries, trailing fields and numeric types
+with current local progress, for initial imports, recovered accounts and fresh accounts.
+The database check below also runs the actual command-line exporter and compares its ZIP
+with the web snapshot, and checks a real extra-light card's live unit and timing schedules.
+
 `check_review_regressions.py --database yumesute_review_checks_<suffix>` requires a
 disposable copy of a prepared save with a five-slot party and Triple Cast parties.
 It refuses other database names and verifies the connected database before running.

@@ -1,6 +1,7 @@
 """Export the current local account(s) as verified, re-importable account ZIPs."""
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -16,6 +17,7 @@ bootstrap()
 from helpers.config import database
 from helpers.msgpack import pack
 from exporter import save_snapshot, verify_export
+from account_snapshot import snapshot
 
 
 def run(output, only):
@@ -25,13 +27,13 @@ def run(output, only):
         app = YumeApp(config=database)
         await app.yume_setup()
         try:
-            from helpers.user_data import user_data
+            account = json.loads((ROOT / 'private/account.json').read_text())
             async with app.acquire_db() as conn:
                 ids = [r['userId'] for r in await conn.conn.fetch('SELECT "userId" FROM accounts ORDER BY "userId"')]
             for uid in ids:
                 if only and uid != only:
                     continue
-                result = await user_data(app, uid)
+                result = await snapshot(app, uid, root=ROOT, account=account)
                 # Same five-part MessagePack-CSharp envelope the game receives on GET /api/data/user.
                 body = b''.join([pack([]), pack(result), pack([]), pack([]), pack([])])
                 dest, manifest = save_snapshot(output, body, client_version='2.31.3.425',
