@@ -22,6 +22,7 @@ async def edit_music_bookmark(request: Request):
 
     music_id = payload.music_master_id
     bookmark_flag = int(payload.bookmark_flag)
+    requested_flag = bookmark_flag
     # The enum permits unknown integers; only the three bookmark bits are valid.
     if bookmark_flag < 0 or bookmark_flag & ~7 or not any(
         music.id_ == music_id for music in cache.music_master
@@ -30,6 +31,11 @@ async def edit_music_bookmark(request: Request):
     app = request.app
     async with app.acquire_db() as conn:
         async with conn.conn.transaction():
+            # The challenge moves two bookmarks atomically when a live finishes.
+            # Share its account lock before taking the normal per-song edit lock.
+            await conn.conn.execute('SELECT pg_advisory_xact_lock($1::bigint)', user_id)
+            from song_challenge import preserve_flag
+            bookmark_flag = await preserve_flag(conn, user_id, music_id, bookmark_flag)
             # The upstream table has no unique constraint on a music ID. Serialize
             # edits for this account/song pair so repeated taps cannot add duplicates.
             await conn.conn.execute(
@@ -71,7 +77,7 @@ async def edit_music_bookmark(request: Request):
                 )
 
     result = BooleanResult(is_success=True)
-    if existing is None and bookmark_flag == 0:
+    if existing is None and bookmark_flag == 0 and requested_flag == 0:
         return respond(result)
     return respond(
         result,

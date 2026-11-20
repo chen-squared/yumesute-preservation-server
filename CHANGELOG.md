@@ -11,6 +11,23 @@ pinned to `3cfca23267fb0f79d7336732db768e1510f20313`.
 [TeamOpenSirius/OpenSiriusServer](https://github.com/TeamOpenSirius/OpenSiriusServer)
 was an independent protocol reference, not a second backend merged into this release.
 
+## November 20, 2026 — One-song random challenge
+
+- Added an optional one-song challenge using an empty native bookmark group (group 3
+  by default). The group contains the pending song; choose its difficulty on the normal
+  music-select screen. Manual settlement, including a failed run, replaces it with the
+  next song and retains the ordinary play records, rating and rewards.
+- Reentry, relogin, server restart, retirement, auto play and bookmark edits cannot reroll
+  the pending song. Every completed round independently samples the full eligible owned-song
+  pool with equal probability, with replacement: immediate repeats are allowed and there is
+  no rotation or cooldown. Long/hidden songs and songs without complete chart resources are excluded.
+- Enabling refuses an occupied group and preserves the other bookmark groups. Existing
+  accounts remain opt-in; `local/song_challenge.py` enables, inspects or disables the mode.
+  Disabling/re-enabling preserves the pending song.
+- **Server-tested:** normal difficulty selection, record persistence, bookmark protection,
+  account isolation, concurrent/retried finishes and injected-failure rollback were checked
+  against disposable save copies. The native bookmark-screen flow still needs device confirmation.
+
 ## November 19, 2026 — Local gameplay preservation and review
 
 - Added the local live/effect calculation port, actor EXP and rank-cap handling,

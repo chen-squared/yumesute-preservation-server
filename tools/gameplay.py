@@ -1427,3 +1427,5 @@ def install(app):
     # やねうら: the April-Fool alternate-chart mode kept open, and what a run on one records.
     import alternate_notations
     alternate_notations.install(app)
+    import song_challenge
+    song_challenge.install(app)

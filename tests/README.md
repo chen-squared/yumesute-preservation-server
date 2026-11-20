@@ -2,6 +2,15 @@
 
 Run from the repository root: `uv run --locked python -m unittest discover -s tests -v`.
 
+`test_song_challenge.py` covers independent full-pool draws, immediate repeats,
+song-level sampling and empty/single-song pools. `check_song_challenge.py --database
+yumesute_review_checks_<suffix>` requires a disposable prepared save copy with two accounts
+and a five-slot party. It changes only that copy: empty-group activation, one pending marker,
+favorite preservation, all five manual difficulties, failed clears, auto/retire behavior,
+relogin/pool persistence, concurrent finish/bookmark edits, injected failure rollback,
+account isolation and occupied-group refusal. Recreate the clone before rerunning and
+drop it afterward; never use a live save. These are server checks, not device UI tests.
+
 `test_account_snapshot.py` covers captured null entries, trailing fields and numeric types
 with current local progress, for initial imports, recovered accounts and fresh accounts.
 The database check below also runs the actual command-line exporter and compares its ZIP

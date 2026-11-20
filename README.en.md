@@ -112,6 +112,29 @@ Keep the computer awake and terminal open while playing. To stop, turn WireGuard
 and press **Control+C**; optionally stop the database with `docker compose stop`.
 On Mac, if double-clicking the launcher is blocked, use the terminal command above.
 
+## Optional one-song challenge
+
+This mode picks a song and keeps it until a manual result is submitted. In normal music
+selection, filter to **Bookmark 3 only** (clear other filters), then choose any normally
+available difficulty. Returning to music selection after the result shows the next song.
+Retiring, auto play, relogging or restarting the server keeps the pending song. Normal play
+records and rewards still apply. Each completed round independently picks from all owned,
+visible, non-long songs with complete chart resources. Every song has equal probability;
+consecutive repeats are allowed, with no rotation or cooldown.
+
+Enable it for an account using an **empty** bookmark group. Replace `USER_ID` with the
+account's numeric ID; `--group 1` or `--group 2` selects another empty group instead.
+
+```sh
+uv run --locked python local/song_challenge.py enable --user-id USER_ID --group 3
+```
+
+Relaunch the game once to load the first marker. The selected group is managed by the
+challenge; other groups remain editable. An occupied group is refused. Use the same
+command with `status` to inspect it or `disable` to release the group. Re-enabling retains
+the pending song. This is a local single-player selection mode, with server-side checks;
+the native screen flow still needs device confirmation.
+
 ## Android setup and missing-catalog repair
 
 Setup defaults to iOS. For a new Android installation, use:

@@ -92,7 +92,12 @@ async def start(request: Request):
                 # really paid, which a ladder run never does (leagues.ladder_stamina_cost).
                 import missions
                 await missions.spend_stamina(s,spent)
-            await context(s,mode if (m or window) else 'normal',ident or 0,{'rank_xp':xp,'auto':p.is_auto_play})
+            current_mode = mode if (m or window) else 'normal'
+            extra = {'rank_xp':xp,'auto':p.is_auto_play}
+            if current_mode == 'normal':
+                import song_challenge
+                extra.update(await song_challenge.start_extra(s, chart.music_master_id, p.is_auto_play))
+            await context(s,current_mode,ident or 0,extra)
             await s.conn.conn.execute('DELETE FROM preservation_course_run WHERE "userId"=$1',s.uid)
             # The sense notation the run plays against: the stage's own for concert and
             # audition, the league window's bonus set for a ladder run.
@@ -192,6 +197,8 @@ async def settle(request: Request, p, *, another_notation_master_id=None):
                     await score_ladder(s, context, active, p, result)
                 from progression import finish_context
                 await finish_context(s,context,p,result)
+                import song_challenge
+                await song_challenge.finish(s, context, active, p)
             await s.conn.conn.execute('DELETE FROM preservation_live_context WHERE "userId"=$1', s.uid)
             changed = s.present()
             keys = {(v[0],v[1][0]) for v in changed}
