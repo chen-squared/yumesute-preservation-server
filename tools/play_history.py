@@ -29,7 +29,6 @@ class Play:
     score: int
     cleared: bool
     max_combo: int
-    star_acts: int
 
     @property
     def points(self):
@@ -44,8 +43,7 @@ def summarize(payload):
     judgments = [counts.pop(int(timing), 0) for timing in TIMINGS]
     judgments[-1] += sum(counts.values())  # unjudged notes carry zero weight
     score, cleared = play_totals(payload)
-    return Play(tuple(judgments), score, cleared, max(int(block.combo) for block in blocks),
-                len(payload.star_act_score_blocks or []))
+    return Play(tuple(judgments), score, cleared, max(int(block.combo) for block in blocks))
 
 
 async def ensure_table(conn):
@@ -62,8 +60,11 @@ async def ensure_table(conn):
         "rivalAchievement" integer CHECK ("rivalAchievement" BETWEEN 0 AND 1010000),
         judgments integer[] NOT NULL,
         score bigint NOT NULL,
-        "maxCombo" integer NOT NULL,
-        "starActs" integer NOT NULL)''')
+        "maxCombo" integer NOT NULL)''')
+    # Let installs that already collected Star Acts retain those values and omit the field on new plays.
+    if await conn.conn.fetchval('''SELECT attnotnull FROM pg_attribute
+            WHERE attrelid = to_regclass($1) AND attname = 'starActs' AND NOT attisdropped''', TABLE):
+        await conn.conn.execute(f'ALTER TABLE {TABLE} ALTER COLUMN "starActs" DROP NOT NULL')
     await conn.conn.execute(f'CREATE INDEX IF NOT EXISTS preservation_play_history_chart '
                             f'ON {TABLE} ("userId","liveMasterId","anotherNotationMasterId",id DESC)')
 
@@ -76,10 +77,10 @@ async def record(s, live_id, mode, play, *, auto=False, alternate=0, rival=None)
         return
     await s.conn.conn.execute(f'''INSERT INTO {TABLE}
         ("userId","liveMasterId","anotherNotationMasterId",mode,"finishedAt","isAutoPlay",cleared,
-         achievement,judgments,score,"maxCombo","starActs","rivalAchievement")
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)''',
+         achievement,judgments,score,"maxCombo","rivalAchievement")
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)''',
         s.uid, live_id, alternate, mode, time.time_ns() // 1000, bool(auto), play.cleared,
-        play.points, play.judgments, play.score, play.max_combo, play.star_acts, rival)
+        play.points, play.judgments, play.score, play.max_combo, rival)
     await s.conn.conn.execute(f'''DELETE FROM {TABLE} WHERE id IN (
         SELECT id FROM {TABLE} WHERE "userId"=$1 AND "liveMasterId"=$2 AND "anotherNotationMasterId"=$3
         ORDER BY id DESC OFFSET $4)''', s.uid, live_id, alternate, PER_CHART)

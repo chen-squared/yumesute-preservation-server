@@ -125,7 +125,7 @@ before play based on recent manual clears, your saved best and comparable charts
 Results compare achievement rates to four decimal places and show the rival's percentage.
 
 Settled runs across the supported modes keep judgment counts, max combo, score, clear
-status, Star Acts and other run details in the existing database. Each standard or
+status and other run details in the existing database. Each standard or
 alternate chart keeps its 20 most recent runs. Rival calibration uses manual clears on
 standard charts.
 

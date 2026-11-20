@@ -188,6 +188,7 @@ async def main(name):
             rows = await history()
             assert [row['mode'] for row in rows] == ['ghost'] * 4 + ['normal', 'lesson', 'alternate']
             assert [row['rivalAchievement'] for row in rows] == [target, 1010000, 990000, 1010000, None, None, None]
+            assert all(row.get('starActs') is None for row in rows)
             assert [row['isAutoPlay'] for row in rows[-3:]] == [True, False, True]
             assert rows[-1]['anotherNotationMasterId'] == alternate.id_
             assert not rows[2]['cleared'] and rows[3]['cleared']
@@ -201,7 +202,7 @@ async def main(name):
                 for difficulty, counts in ((4, (900, 100, 0, 0, 0, 0)), (5, (850, 0, 150, 0, 0, 0))):
                     for _ in range(play_history.PER_CHART + 1):
                         await play_history.record(s, charts[difficulty].id_, 'normal',
-                                                  play_history.Play(counts, 2000, True, 1000, 2))
+                                                  play_history.Play(counts, 2000, True, 1000))
                     ref, _, samples = await ghost_rating.reference(s, charts[difficulty])
                     assert len(samples) == play_history.PER_CHART
                     assert ref == play_history.rate_points(counts) / play_history.RATE_SCALE

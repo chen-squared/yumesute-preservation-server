@@ -20,7 +20,7 @@ was an independent protocol reference, not a second backend merged into this rel
   personal best, or similar charts. Win, draw and loss use the four-decimal achievement
   rate. Running out of life settles the match as a loss.
 - Stored the latest 20 settled results per standard or alternate chart in the existing
-  database, including judgment counts, max combo, clear status, score, Star Acts, mode
+  database, including judgment counts, max combo, clear status, score, mode
   and the rival's target where applicable.
 
 ## November 21, 2026 — Lesson draws and stamina
