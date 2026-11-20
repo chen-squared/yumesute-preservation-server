@@ -8,6 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT/'vendor/server-of-dreams'))
+import stamina_clock
+stamina_clock.install()
 from app import app
 from gameplay import install
 install(app)
@@ -74,7 +76,7 @@ async def user_data(app,uid):
     from starter_music import ensure_starter_music
     await ensure_starter_music(app, uid, ACCOUNT)
     from league_history import for_client
-    return for_client(await export_user_data(app,uid))
+    return stamina_clock.for_client(for_client(await export_user_data(app,uid)))
 
 async def export_user_data(app,uid):
     return await snapshot(app,uid,root=ROOT,account=ACCOUNT)

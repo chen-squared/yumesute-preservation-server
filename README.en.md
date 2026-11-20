@@ -116,7 +116,8 @@ On Mac, if double-clicking the launcher is blocked, use the terminal command abo
 
 This mode picks a song and keeps it until a manual result is submitted. In normal music
 selection, filter to **Bookmark 3 only** (clear other filters), then choose any normally
-available difficulty. Returning to music selection after the result shows the next song.
+available difficulty. A manual result in solo live or Lessons (稽古) advances the draw.
+Returning to music selection after the result shows the next song.
 Retiring, auto play, relogging or restarting the server keeps the pending song. Normal play
 records and rewards still apply. Each completed round independently picks from all owned,
 visible, non-long songs with complete chart resources. Every song has equal probability;

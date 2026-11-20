@@ -129,7 +129,7 @@ async def start_extra(s, music, auto):
 
 async def finish(s, context, active, payload):
     token = (context['extra'] or {}).get('song_challenge_generation')
-    if (context['mode'] != 'normal' or not token or active['isAutoPlay']
+    if (context['mode'] not in ('normal', 'lesson') or not token or active['isAutoPlay']
             or not payload.base_score_blocks):
         return
     row = await current(s.conn, s.uid)

@@ -192,9 +192,10 @@ class State:
 
     def present(self):
         from league_history import for_client
-        return for_client([
+        from stamina_clock import for_client as stamina_for_client
+        return stamina_for_client(for_client([
             [IDATA_OBJECT_KEY[n], _to_array(n, r)] for (n, _), r in self.dirty.items()
-        ])
+        ]))
 
 
 @asynccontextmanager

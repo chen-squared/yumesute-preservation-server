@@ -73,6 +73,7 @@ async def main():
     from helpers.cache import cache, load_master_data
     from helpers.msgpack import pack
     from helpers.shops import market_frame
+    from helpers.stamina import max_stamina, restored_at
     from protocol import envelope, expand, unpack_stream
 
     force_scratch_database()
@@ -84,6 +85,8 @@ async def main():
     from models import (BaseScoreBlock, FinishLivePayload, NoteJudgePayload, PurchaseItemPayload,
                         SenseScoreBlock, StarActScoreBlock, StartLessonPayload, StartLivePayload)
     from models.enums import TimingTypes
+    from models.keys import KEYS
+    from models.unions import IDATA_OBJECT_KEY
 
     app = serve.app
     # The app loads master data inside its lifespan; this run drives the app without one.
@@ -159,26 +162,15 @@ async def main():
     song = min(priced, key=lambda m: m.stamina_consumption)
     cost = int(song.stamina_consumption)
     ratio = max(1, -(-goal(100000) // cost))
-    # One live has to pay the whole daily goal, and the save only carries its recovered
-    # stamina. The clone is topped up - this writes to yumesute_mission_checks and nowhere
-    # else; the ratio itself is the game's own multi-consumption field.
-    needed = cost * ratio + 100
-    if stamina < needed:
-        from helpers.stamina import max_stamina, restored_at
-
-        async with app.acquire_db() as conn:
-            rank = await conn.conn.fetchval('SELECT "playerRank" FROM "user" WHERE "userId"=$1',
-                                            ACCOUNT)
-            # ``currentStamina`` alone is not the game's invariant: the effective value is
-            # recomputed from maxStaminaRestoredAt, so a top-up has to carry that too.
-            at = int(time.time() * 1_000_000)
-            await conn.conn.execute(
-                'UPDATE "user" SET "currentStamina"=$2,"maxStaminaRestoredAt"=$3 WHERE "userId"=$1',
-                ACCOUNT, needed, restored_at(needed, max_stamina(rank), at))
-        print(f"PASS: topped the clone up to {needed} stamina of {max_stamina(rank)} (the daily "
-              f"goal needs {cost}x{ratio}); the live save is untouched")
-        stamina = needed
-    assert stamina >= cost * ratio, f"the clone needs {cost * ratio} stamina to reach the daily goal"
+    # Start from full (or overfull) in the clone so passive recovery cannot affect
+    # the exact debit we expect at live start.
+    async with app.acquire_db() as conn:
+        rank = await conn.conn.fetchval('SELECT "playerRank" FROM "user" WHERE "userId"=$1', ACCOUNT)
+        natural_max = max_stamina(rank)
+        stamina = max(natural_max, cost * ratio)
+        await conn.conn.execute(
+            'UPDATE "user" SET "currentStamina"=$2,"maxStaminaRestoredAt"=$3 WHERE "userId"=$1',
+            ACCOUNT, stamina, restored_at(stamina, natural_max, time.time_ns() // 1000))
     chart = next(c for c in cache.live_master if c.music_master_id == song.id_
                  and int(c.difficulty) == 3)
 
@@ -220,17 +212,41 @@ async def main():
             """The fault array of a response - the part ``envelope`` refuses to return."""
             return [expand(v) for v in unpack_stream(body)][0]
 
-        started = envelope(await raw("/api/Lives/Start", pack(StartLivePayload(
+        start_response = envelope(await raw("/api/Lives/Start", pack(StartLivePayload(
             party_id=party["id"], live_master_id=chart.id_, use_stamina=True,
-            stamina_consumption_ratio=ratio, live_setting_master_id=1))))[1]
+            stamina_consumption_ratio=ratio, live_setting_master_id=1))))
+        started = start_response[1]
         assert started and started[0], "no live unit came back"
+        async def stored_user():
+            async with app.acquire_db() as conn:
+                return await conn.conn.fetchrow('SELECT "currentStamina","maxStaminaRestoredAt" FROM "user" '
+                                                'WHERE "userId"=$1', ACCOUNT)
+
+        start_user = await stored_user()
+        after_start = start_user['currentStamina']
         async with app.acquire_db() as conn:
-            after_start = await conn.conn.fetchval('SELECT "currentStamina" FROM "user" '
-                                                   'WHERE "userId"=$1', ACCOUNT)
             active = await conn.conn.fetchrow('SELECT * FROM active_live WHERE "userId"=$1', ACCOUNT)
         assert active["staminaSpent"] is True, dict(active)
         assert after_start == stamina - cost * ratio, (stamina, after_start, cost, ratio)
-        envelope(await raw("/api/Lives/FinishAndValidate", pack(payload)))
+        finish_response = envelope(await raw("/api/Lives/FinishAndValidate", pack(payload)))
+        finish_user = await stored_user()
+        user_key = IDATA_OBJECT_KEY['User']
+        clock_key = next(key for key, attr, *_ in KEYS['User'] if attr == 'max_stamina_restored_at')
+        stamina_key = next(key for key, attr, *_ in KEYS['User'] if attr == 'current_stamina')
+        reload_response = await client.get('/api/data/user')
+        assert reload_response.status_code == 200
+        reloaded = envelope(reload_response.content)[1]
+        for entries, stored in ((start_response[2], start_user), (finish_response[2], finish_user),
+                                (reloaded, finish_user)):
+            user = next(obj[1] for obj in entries if obj and obj[0] == user_key)
+            assert user[stamina_key] == stored['currentStamina']
+            full_at = user[clock_key]
+            assert full_at.seconds * MICRO + full_at.nanoseconds // 1000 == stored['maxStaminaRestoredAt'] + 9 * 3600 * MICRO
+        saved_user = next(obj[1] for obj in await serve.export_user_data(app, ACCOUNT) if obj and obj[0] == user_key)
+        full_at = saved_user[clock_key]
+        assert full_at.seconds * MICRO + full_at.nanoseconds // 1000 == finish_user['maxStaminaRestoredAt']
+        assert saved_user[stamina_key] == finish_user['currentStamina']
+        print('PASS: start, result, and reload show the debited stamina on the JST recovery clock; exports keep UTC')
         current = await rows()
         assert current[100000][:2] == (cost * ratio, cost * ratio >= goal(100000)), current[100000]
         assert current[200000][:2] == (cost * ratio, False), current[200000]

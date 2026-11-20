@@ -128,8 +128,9 @@ async def start_lesson(request:Request):
     try:
         p=await read_request(request,StartLessonPayload)
         if p is None:raise Rejected()
-        base=p.character_base_master_id;chart=p.live_master_id
-        if not master('live_master',chart):raise Rejected('Unknown chart')
+        base=p.character_base_master_id
+        chart=master('live_master',p.live_master_id)
+        if not chart:raise Rejected('Unknown chart')
         async with transaction(request) as s:
             row=await lesson_party(s,base);await daily(s)
             if not any(cid for _,cid in lesson_slots(row)):raise Rejected('Empty lesson party')
@@ -145,13 +146,16 @@ async def start_lesson(request:Request):
                 if not actor or master('character_master',actor['characterMasterId']).character_base_master_id!=base:raise Rejected(f'Invalid lesson actor at slot {position}: requested base {base}, actor present {bool(actor)}')
                 await s.conn.execute(q.upsert_party_slot(s.uid,dict(id=sid,partyId=party_id,position=position,characterId=ident,posterId=None,accessoryId=None,bonusAbilityEnableFlags=0)))
                 sid+=1
-            unit,live_id=await build_live_unit(s.conn,s.uid,party_id,chart)
+            unit,live_id=await build_live_unit(s.conn,s.uid,party_id,chart.id_)
             await s.conn.conn.execute('DELETE FROM party_slot WHERE "userId"=$1 AND "partyId"=$2',s.uid,party_id)
             await s.conn.conn.execute('DELETE FROM party WHERE "userId"=$1 AND id=$2',s.uid,party_id)
             await s.conn.execute(delete_active_lives(s.uid))
-            await s.conn.execute(create_active_live(s.uid,live_id,chart,0,1,False))
+            await s.conn.execute(create_active_live(s.uid,live_id,chart.id_,0,1,False))
             await s.conn.conn.execute('DELETE FROM preservation_course_run WHERE "userId"=$1',s.uid)
-            await context(s,'lesson',base,{'rank_xp':rules()['lesson_rank_xp']})
+            from song_challenge import start_extra
+            extra = {'rank_xp': rules()['lesson_rank_xp']}
+            extra.update(await start_extra(s, chart.music_master_id, auto=False))
+            await context(s, 'lesson', base, extra)
         return respond(unit,present=s.present())
     except Rejected as e:return respond(None,faults=[fault('InvalidLesson',str(e))])
 

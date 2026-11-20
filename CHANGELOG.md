@@ -11,6 +11,12 @@ pinned to `3cfca23267fb0f79d7336732db768e1510f20313`.
 [TeamOpenSirius/OpenSiriusServer](https://github.com/TeamOpenSirius/OpenSiriusServer)
 was an independent protocol reference, not a second backend merged into this release.
 
+## November 21, 2026 — Lesson draws and stamina display
+
+- A valid manual result on the pending random song advances the draw in 稽古 as well as solo live.
+- Send the stamina recovery deadline on the client's JST clock so the display reflects the
+  actual debit and recovery. The database still tracks elapsed time from the UTC deadline.
+
 ## November 20, 2026 — One-song random challenge
 
 - Added an optional one-song challenge using an empty native bookmark group (group 3

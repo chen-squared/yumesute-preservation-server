@@ -34,7 +34,7 @@ async def main(name):
     from helpers.auth import make_session_jwt
     from helpers.cache import cache
     from helpers.msgpack import pack
-    from models import EditBookmarkPayload, StartLivePayload
+    from models import EditBookmarkPayload, StartLessonPayload, StartLivePayload
     from models.unions import IDATA_OBJECT_KEY
     from protocol import envelope, expand, unpack_stream
 
@@ -48,6 +48,8 @@ async def main(name):
             party = await c.conn.fetchval('SELECT "partyId" FROM party_slot WHERE "userId"=$1 '
                                          'GROUP BY "partyId" HAVING count(*)>=5 LIMIT 1', uid)
             assert party is not None
+            lesson_base = await c.conn.fetchval('SELECT "characterBaseMasterId" FROM character_base '
+                                               'WHERE "userId"=$1 ORDER BY "characterBaseMasterId" LIMIT 1', uid)
             for table in ('active_live', 'preservation_live_context', 'preservation_course_run'):
                 await c.conn.execute(f'DELETE FROM {table} WHERE "userId"=$1', uid)
             await c.conn.execute(f'DELETE FROM {challenge.TABLE} WHERE "userId"=ANY($1::bigint[])', [uid, other])
@@ -100,6 +102,11 @@ async def main(name):
                 return await post('/api/Lives/Start', StartLivePayload(
                     party_id=party, live_master_id=chart.id_, is_auto_play=auto))
 
+            async def start_lesson(music):
+                chart = next(m for m in cache.live_master if m.music_master_id == music and int(m.difficulty) == 4)
+                return await post('/api/Lives/StartLesson', StartLessonPayload(
+                    character_base_master_id=lesson_base, live_master_id=chart.id_))
+
             async def edit(music, flag):
                 return await post('/api/Lives/Music/EditBookmark', EditBookmarkPayload(music_master_id=music, bookmark_flag=flag))
 
@@ -140,6 +147,23 @@ async def main(name):
             await post('/api/Lives/FinishAndValidate', result_payload())
             assert (await current())['generation'] == 1
             print('PASS: retirement, auto play and other songs do not reroll the challenge')
+
+            await start_lesson(elsewhere)
+            await post('/api/Lives/FinishAndValidate', result_payload())
+            await start_lesson(pending)
+            await post('/api/Lives/Retire')
+            assert (await current())['generation'] == 1
+            await start_lesson(pending)
+            assert (await current())['generation'] == 1
+            with patch.object(challenge, 'draw', return_value=elsewhere):
+                result = await post('/api/Lives/FinishAndValidate', result_payload(life=0))
+            after = await current()
+            assert (after['generation'], after['completedCount'], after['musicMasterId']) == (2, 1, elsewhere)
+            bookmark_key = IDATA_OBJECT_KEY['MusicBookmark']
+            assert [v[1] for v in result[2] if v[0] == bookmark_key] == [[pending, 1], [elsewhere, 7]]
+            await post('/api/Lives/FinishAndValidate', result_payload(life=0), valid=False)
+            assert (await current())['generation'] == 2
+            print('PASS: a lesson on the pending song advances once after settling, even on failure; retirement and other lessons do not')
 
             # The selected object is a song. Each normal difficulty can complete it,
             # with the normal record/rating pipeline and no special chart rewrite.

@@ -221,14 +221,15 @@ class Recovery:
                 u=next(row for name,_,row in rows if name=='User')
                 await c.execute(add_hash_user_id(u['hashUserId'],uid))
                 # Read back through this transaction; no partial import or filesystem marker.
-                from helpers.user_data import build_present,_ALL_TYPES
+                from helpers.user_data import _ALL_TYPES
+                from stamina_clock import database_present
                 class Bound:
                     def acquire_db(self):
                         from contextlib import asynccontextmanager
                         @asynccontextmanager
                         async def acquire():yield c
                         return acquire()
-                baseline=await build_present(Bound(),uid,*_ALL_TYPES)
+                baseline=await database_present(Bound(),uid,*_ALL_TYPES)
                 await c.conn.execute('INSERT INTO preservation_recovery VALUES($1,$2,$3)',uid,raw,pack(baseline))
             elif not await c.conn.fetchval('SELECT EXISTS(SELECT 1 FROM preservation_recovery WHERE user_id=$1)',uid) and not (self.account.get('mode')=='import' and self.account.get('user_id')==uid):
                 raise RecoveryError('LocalIdentityConflict')
