@@ -15,6 +15,7 @@ from live_parity import reset_auto_play, set_auto_play
 from models import StartLivePayload, FinishLivePayload, FinishLiveResult, ConcertResult
 from routes import lives as upstream
 from scripts._sirius import _unpack_all, _decompress
+import play_history
 
 router = APIRouter()
 _start_cost = ContextVar('live_start_stamina_cost', default=None)
@@ -71,13 +72,19 @@ def rewards(rows):
 
 @router.post('/api/Lives/Start')
 @router.post('/api/Lives/StartConcert')
+@router.post('/api/Lives/StartGhostLive')
 async def start(request: Request):
     try:
         p = await read_request(request, StartLivePayload)
         if p is None: raise Rejected('Missing payload')
         concert = request.url.path.endswith('StartConcert')
+        ghost = request.url.path.endswith('StartGhostLive') or bool(p.ghost_live_master_id)
         window = None
-        if getattr(p, 'league_master_id', None):
+        if ghost:
+            if concert or p.concert_stage_master_id or p.league_master_id or p.audition_master_id:
+                raise Rejected('Conflicting Ghost Live mode')
+            mode, ident, m = 'ghost', p.ghost_live_master_id, None
+        elif getattr(p, 'league_master_id', None):
             from leagues import begin, ladder_stamina_cost, window_for
             window, mode, ident = window_for('league', p.league_master_id), 'league', p.league_master_id
             m = None
@@ -85,7 +92,7 @@ async def start(request: Request):
             mode, ident = ('concert', p.concert_stage_master_id) if concert else ('audition', p.audition_master_id)
             m = master('concert_stage_master' if concert else 'audition_master', ident) if ident else None
         chart = master('live_master', p.live_master_id)
-        if not chart or (concert and not m) or (ident and not m and not window) or (
+        if not chart or (concert and not m) or (ident and not (m or window or ghost)) or (
                 m and chart.music_master_id != m.music_master_id) or (
                 window and (chart.music_master_id != window.music or int(chart.difficulty) > window.difficulty)):
             raise Rejected('Invalid stage or chart')
@@ -98,6 +105,10 @@ async def start(request: Request):
                 raise Rejected('Stage is locked')
             from progression import daily, context, rules
             await daily(s)
+            ghost_stage, ghost_extra = None, {}
+            if ghost:
+                import ghost_live
+                ghost_stage, ghost_extra = await ghost_live.begin(s, p, chart)
             cost = 0
             if window:
                 await begin(s, 'league', window)
@@ -122,8 +133,8 @@ async def start(request: Request):
                 # really paid, which a ladder run never does (leagues.ladder_stamina_cost).
                 import missions
                 await missions.spend_stamina(s,spent)
-            current_mode = mode if (m or window) else 'normal'
-            extra = {'rank_xp':xp,'auto':p.is_auto_play}
+            current_mode = mode if (m or window or ghost_stage) else 'normal'
+            extra = {'rank_xp':xp,'auto':p.is_auto_play,**ghost_extra}
             if current_mode == 'normal':
                 import song_challenge
                 extra.update(await song_challenge.start_extra(s, chart.music_master_id, p.is_auto_play))
@@ -133,6 +144,8 @@ async def start(request: Request):
             # audition, the league window's bonus set for a ladder run.
             notation = (m.music_master_id, m.sense_notation_master_id) if m else (
                 window.music, window.sense_ids[0]) if window else None
+            if ghost_stage:
+                notation = (ghost_stage.music_master_id, ghost_stage.sense_notation_master_id)
             if notation:
                 unit = from_array('LiveUnit', r[1])
                 lte = await build_live_time_event(s.conn, s.uid, p.party_id, *notation)
@@ -216,8 +229,9 @@ async def settle(request: Request, p, *, another_notation_master_id=None):
                                        record_live=not bool(alternate)))
             if r[0]: raise Rejected('Live validation failed')
             result = from_array('FinishLiveResult', r[1])
+            play = play_history.summarize(p)
             if context:
-                score, cleared = play_totals(p)
+                score, cleared = (play.score, play.cleared) if play else play_totals(p)
                 if context['mode'] in ('concert','audition'):
                     await apply_progress(s, context['mode'], context['masterId'], score, len(p.star_act_score_blocks or []), cleared, result)
                 if context['mode'] in ('league','triple_cast'):
@@ -225,10 +239,16 @@ async def settle(request: Request, p, *, another_notation_master_id=None):
                     # the per-play reward package and the weekly league mission.
                     from leagues import score_ladder
                     await score_ladder(s, context, active, p, result)
+                if context['mode'] == 'ghost':
+                    import ghost_live
+                    await ghost_live.finish(s, context, active, play, result)
                 from progression import finish_context
                 await finish_context(s,context,p,result)
                 import song_challenge
                 await song_challenge.finish(s, context, active, p)
+            await play_history.record(s, active['liveMasterId'], context['mode'] if context else 'normal',
+                                      play, auto=active['isAutoPlay'], alternate=alternate or 0,
+                                      rival=result.ghost_live_result.ghost_user_score if result.ghost_live_result else None)
             await s.conn.conn.execute('DELETE FROM preservation_live_context WHERE "userId"=$1', s.uid)
             changed = s.present()
             keys = {(v[0],v[1][0]) for v in changed}
@@ -259,6 +279,7 @@ def install(app):
                 await conn.conn.execute("ALTER TABLE preservation_live_context ADD COLUMN IF NOT EXISTS extra jsonb NOT NULL DEFAULT '{}'::jsonb")
                 await conn.conn.execute('CREATE TABLE IF NOT EXISTS preservation_course_run ("userId" bigint PRIMARY KEY REFERENCES accounts("userId") ON DELETE CASCADE, data jsonb NOT NULL)')
                 await conn.conn.execute('ALTER TABLE active_live ADD COLUMN IF NOT EXISTS "isAutoPlay" boolean NOT NULL DEFAULT false')
+                await play_history.ensure_table(conn)
                 from things_compat import repair_dual_cards
                 async with conn.transaction():
                     repaired = await repair_dual_cards(conn)

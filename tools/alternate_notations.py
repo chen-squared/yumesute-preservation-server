@@ -75,6 +75,7 @@ from helpers.user_data import current_user_id
 from models import (FinishAnotherNotationLivePayload, FinishLivePayload, FinishLiveResult,
                     RateResult, RateUpdateResult)
 from models.enums import AchievementRateGrades, ClearLamps
+import play_history
 
 router = APIRouter()
 
@@ -253,12 +254,10 @@ async def finish_another_notation(request: Request):
                 raise Rejected('Live mode changed before settlement')
             active = await s.conn.conn.fetchrow(
                 'SELECT * FROM active_live WHERE "userId"=$1', s.uid)
-            if active:
-                live = chart_for(chart)
-                if live is None or int(active['liveMasterId']) != int(live.id_):
-                    # The record belongs to the song that was actually started: every alternate
-                    # row names one song, so a run started on another song cannot write this row.
-                    raise Rejected('Alternate chart is not this live')
+            live = chart_for(chart)
+            if active and (live is None or int(active['liveMasterId']) != int(live.id_)):
+                # A run started on another song cannot write this alternate chart's record.
+                raise Rejected('Alternate chart is not this live')
             row = await s.one('AnotherNotation', anotherNotationMasterId=int(chart.id_))
             values, run = record_update(row, payload, is_cleared)
             if row:
@@ -272,6 +271,9 @@ async def finish_another_notation(request: Request):
                 await s.conn.execute(delete_active_lives(s.uid))
                 await s.conn.conn.execute(
                     'DELETE FROM preservation_live_context WHERE "userId"=$1', s.uid)
+            await play_history.record(s, live.id_ if live else 0, 'alternate', play_history.summarize(payload),
+                                      auto=payload.is_auto_play or bool(active and active['isAutoPlay']),
+                                      alternate=chart.id_)
             total_rate = float(await s.conn.conn.fetchval(
                 'SELECT "playerRate" FROM user_profile WHERE "userId"=$1', s.uid) or 0.0)
             result = FinishLiveResult(

@@ -11,6 +11,18 @@ pinned to `3cfca23267fb0f79d7336732db768e1510f20313`.
 [TeamOpenSirius/OpenSiriusServer](https://github.com/TeamOpenSirius/OpenSiriusServer)
 was an independent protocol reference, not a second backend merged into this release.
 
+## November 21, 2026 — Ghost Live local matches
+
+- Added local opponents to 即興演劇. Each match independently draws one of the owned,
+  playable short songs, with selectable difficulty and ordinary play records. The song
+  and rival stay fixed through retry, retirement and reentry until a manual result settles.
+- Rival targets are fixed before play using the chosen chart's local play history, saved
+  personal best, or similar charts. Win, draw and loss use the four-decimal achievement
+  rate. Running out of life settles the match as a loss.
+- Stored the latest 20 settled results per standard or alternate chart in the existing
+  database, including judgment counts, max combo, clear status, score, Star Acts, mode
+  and the rival's target where applicable.
+
 ## November 21, 2026 — Lesson draws and stamina
 
 - A valid manual result on the pending random song advances the draw in 稽古 as well as solo live.

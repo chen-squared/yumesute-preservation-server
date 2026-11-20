@@ -43,8 +43,12 @@ def _catalog(music_identity, live_identity):
                      and all((CHARTS / str(m.id_) / f'{d}.enc').is_file() for d in range(1, 6)))
 
 
+def complete_short_songs():
+    return _catalog(id(cache.music_master), id(cache.live_master))
+
+
 async def candidates(s):
-    available = _catalog(id(cache.music_master), id(cache.live_master))
+    available = complete_short_songs()
     return sorted({r['musicMasterId'] for r in await s.rows('Music')
                    if r['isPossession'] and r['musicMasterId'] in available})
 

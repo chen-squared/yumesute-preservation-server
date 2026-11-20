@@ -47,6 +47,7 @@ async def main(name):
     import course_schedule
     import progression
     import leagues
+    import play_history
     from helpers.auth import make_session_jwt
     from helpers.cache import cache
     from helpers.live_rate import chart_live_rate
@@ -92,6 +93,12 @@ async def main(name):
                     async def reset_live():
                         for table in ('active_live', 'preservation_live_context', 'preservation_course_run'):
                             await conn.conn.execute(f'DELETE FROM {table} WHERE "userId"=$1', uid)
+
+                    async def check_play_history(chart, mode, alternate=0):
+                        row = await conn.conn.fetchrow(f'SELECT * FROM {play_history.TABLE} '
+                            'WHERE "userId"=$1 AND "liveMasterId"=$2 ORDER BY id DESC LIMIT 1', uid, chart.id_)
+                        assert row and (row['mode'], row['anotherNotationMasterId']) == (mode, alternate)
+                        assert row['cleared'] and row['achievement'] == 1010000 and not row['isAutoPlay']
 
                     async def compatible_exports():
                         from helpers.user_data import user_data
@@ -159,6 +166,7 @@ async def main(name):
                                 opened = await post('/api/Lives/StartTripleCastLive', StartTripleCastLivePayload(
                                     m_live_id=chart.id_, m_triple_cast_id=window.id))
                             finished = await post('/api/Lives/FinishAndValidate', finish_payload(TimingTypes.PERFECT_STAR))
+                            await check_play_history(chart, kind)
                             tag = IDATA_OBJECT_KEY[spec['history']]
                             fields = {field: key for key, field, *_ in KEYS[spec['history']]}
                             for response in (opened, finished):
@@ -320,6 +328,7 @@ async def main(name):
                                 await post('/api/Lives/FinishAnotherNotationLive', payload)
                             else:
                                 await post('/api/Lives/FinishAndValidate', payload)
+                            await check_play_history(chart, 'course', detail.another_notation_master_id)
                         after = await conn.conn.fetchval('SELECT json_agg(l ORDER BY id)::text '
                                                         'FROM live l WHERE "userId"=$1', uid)
                         assert before == after, 'The alternate course wrote normal chart records'

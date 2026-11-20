@@ -11,6 +11,12 @@ relogin/pool persistence, concurrent finish/bookmark edits, injected failure rol
 account isolation and occupied-group refusal. Recreate the clone before rerunning and
 drop it afterward; never use a live save. These are server checks, not device UI tests.
 
+`check_ghost_live.py --database yumesute_review_checks_<suffix>` uses a disposable
+prepared save with a five-slot party, lesson actors and a broad song collection. It checks
+the published match catalog, five difficulties, retry and reconnect, achievement-rate
+results, atomic/concurrent finish, and the per-chart history used to set rivals' targets.
+Recreate the clone before rerunning and drop it afterward.
+
 `test_account_snapshot.py` covers captured null entries, trailing fields and numeric types
 with current local progress, for initial imports, recovered accounts and fresh accounts.
 The database check below also runs the actual command-line exporter and compares its ZIP

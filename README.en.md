@@ -112,6 +112,23 @@ Keep the computer awake and terminal open while playing. To stop, turn WireGuard
 and press **Control+C**; optionally stop the database with `docker compose stop`.
 On Mac, if double-clicking the launcher is blocked, use the terminal command above.
 
+## Ghost Live local matches
+
+Open **Live → 誰かと対戦 → 即興演劇**. Relaunch the game once after updating to load
+the expanded catalog. Each round picks one owned short song with complete chart files.
+Every song in the pool has equal odds each time, so immediate repeats are possible.
+Choose your difficulty on the song screen.
+
+Retiring, retrying or logging in again keeps the same song and rival. A manual result
+unlocks the next draw. Running out of life counts as a loss. The rival's target is set
+before play based on recent manual clears, your saved best and comparable charts.
+Results compare achievement rates to four decimal places and show the rival's percentage.
+
+Settled runs across the supported modes keep judgment counts, max combo, score, clear
+status, Star Acts and other run details in the existing database. Each standard or
+alternate chart keeps its 20 most recent runs. Rival calibration uses manual clears on
+standard charts.
+
 ## Optional one-song challenge
 
 This mode picks a song and keeps it until a manual result is submitted. In normal music
@@ -212,6 +229,7 @@ an account; do not delete a working save to make room for it.
 | Scoring, lessons, usage limits | Some values are approximations or generous preservation policies, not exact official parity |
 | Fresh accounts | Automatic creation and initial name saving supported; full opening sequence awaits device verification |
 | Theater League, Triple Cast, weekly courses | Local schedules and simulated opponents; leagues also allow STELLA/OLIVIER. Device retest pending |
+| Ghost Live | Local matches with random song draws and achievement-rate results. Device confirmation pending |
 | Multiplayer, circles | Unsupported/incomplete; captured traffic is not a working implementation |
 | Unlock-all / complete no-limits mode | Not included in this release |
 | Client 3.0.0 / new app installation | Use 2.31.3; see the rollback guide for compatibility details |

@@ -76,6 +76,8 @@ def preserved(year, watch=None, schedule_day=None):
     # The weekly course editions that keep ウィークリーコース running past 2026-09-21 (course_schedule).
     from course_schedule import extend_tables as extend_course_tables
     extend_course_tables(tables,changes)
+    from ghost_schedule import extend_tables as extend_ghost_tables
+    extend_ghost_tables(tables, changes)
     # The character-birthday calendar, moved onto this year (see birthday_calendar).
     from birthday_calendar import rotate
     rotate(tables,changes,year,watch=watch)
@@ -99,8 +101,10 @@ def refresh_schedule_cache():
         return
     from league_schedule import extend_cache
     from course_schedule import extend_cache as extend_courses
+    from ghost_schedule import extend_cache as extend_ghosts
     extend_cache()
     extend_courses()
+    extend_ghosts()
     _schedule_cache_key = key
 
 def repair_cached_dates():

@@ -1430,3 +1430,5 @@ def install(app):
     alternate_notations.install(app)
     import song_challenge
     song_challenge.install(app)
+    import ghost_live
+    ghost_live.install(app)
