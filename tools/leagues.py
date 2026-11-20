@@ -32,7 +32,6 @@ import json
 import random
 import re
 import time
-from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
@@ -221,31 +220,6 @@ def ladder_stamina_cost(music):
     payload, and a ladder run never spends stamina whichever way it arrives.
     """
     return 0
-
-
-_FREE_RUN = ContextVar('free_ladder_run', default=False)
-_upstream_stamina_cost = None
-
-
-def begin_free_run():
-    """Mark the live start about to run as a ladder run (returns a reset token)."""
-    return _FREE_RUN.set(True)
-
-
-def end_free_run(token) -> None:
-    _FREE_RUN.reset(token)
-
-
-def _stamina_cost(live_master_id, ratio):
-    """The price ``Lives/Start`` charges: nothing while a ladder run is in flight.
-
-    The upstream route re-reads its own payload, so the free rule cannot be applied to
-    the payload parsed here; pricing the run instead also keeps ``active_live`` recording
-    that no stamina was spent, rather than taking stamina and handing it back afterwards.
-    """
-    if _FREE_RUN.get():
-        return 0
-    return _upstream_stamina_cost(live_master_id, ratio)
 
 
 # --- storage --------------------------------------------------------------------------
@@ -1186,10 +1160,3 @@ def install(app):
     count = len(app.router.routes)
     app.include_router(router)
     app.router.routes[:] = app.router.routes[count:] + app.router.routes[:count]
-
-    # The one live rule the ladder adds: a ladder run is priced at no stamina. It is
-    # installed last so the price captured here is whatever the other overlays left.
-    global _upstream_stamina_cost
-    from routes import lives as live_route
-    _upstream_stamina_cost = live_route._stamina_cost
-    live_route._stamina_cost = _stamina_cost

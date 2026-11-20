@@ -50,7 +50,8 @@ async def main(name):
     from helpers.auth import make_session_jwt
     from helpers.cache import cache
     from helpers.live_rate import chart_live_rate
-    from helpers.msgpack import pack
+    from helpers.msgpack import from_array, pack
+    from helpers.stamina import max_stamina, restored_at
     from models import (FinishAnotherNotationLivePayload, PurchaseItemPayload, StartLivePayload,
                         StartTripleCastLivePayload, TripleCastPartyScore)
     from models.keys import KEYS
@@ -258,6 +259,43 @@ async def main(name):
                         assert row['notationRate'] == chart_live_rate(chart.id_, 80.0), \
                             'The failed 101% was promoted to rating by the subsequent 80% clear'
 
+                    async def normal_stamina_fallback():
+                        await reset_live()
+                        song = gameplay.master('music_master', 2)
+                        chart = next(c for c in cache.live_master if c.music_master_id == song.id_
+                                     and int(c.difficulty) == 4)
+                        base = song.stamina_consumption
+                        await missions.rotate(gameplay.State(conn, uid))
+
+                        async def stamina_missions():
+                            return [r['missionCurrentCount'] for r in await conn.conn.fetch(
+                                'SELECT "missionCurrentCount" FROM mission WHERE "userId"=$1 '
+                                'AND "missionMasterId" IN (100000,200000) ORDER BY "missionMasterId"', uid)]
+
+                        # Starting stock, after natural recovery, chosen ratio, paid play, actual ratio.
+                        cases = ((4 * base + 1, 4 * base + 1, 3, True, 3),
+                                 (3 * base + 1, 3 * base + 1, 10, True, 3),
+                                 (2 * base - 1, 2 * base, 10, True, 2),
+                                 (base - 1, base - 1, 10, True, 0),
+                                 (4 * base, 4 * base, 10, False, 0))
+                        for stock, available, chosen, use_stamina, paid_ratio in cases:
+                            rank = await conn.conn.fetchval('SELECT "playerRank" FROM "user" WHERE "userId"=$1', uid)
+                            await conn.conn.execute('UPDATE "user" SET "currentStamina"=$2,"maxStaminaRestoredAt"=$3 '
+                                                    'WHERE "userId"=$1', uid, stock,
+                                                    restored_at(available, max_stamina(rank), time.time_ns() // 1000))
+                            before = await stamina_missions()
+                            await post('/api/Lives/Start', StartLivePayload(party_id=party, live_master_id=chart.id_,
+                                use_stamina=use_stamina, stamina_consumption_ratio=chosen))
+                            spent = paid_ratio * base
+                            assert await conn.conn.fetchval('SELECT "staminaSpent" FROM active_live WHERE "userId"=$1',
+                                                             uid) == bool(spent)
+                            assert await conn.conn.fetchval('SELECT "currentStamina" FROM "user" WHERE "userId"=$1',
+                                                             uid) == (available - spent if spent else stock)
+                            assert await stamina_missions() == [v + spent for v in before]
+                            result = await post('/api/Lives/FinishAndValidate', finish_payload(TimingTypes.PERFECT))
+                            xp = from_array('FinishLiveResult', result[1]).player_rank_point_result.rank_point_acquired
+                            assert xp == int(spent * progression.rules()['rank_xp_per_stamina'])
+
                     async def alternate_course():
                         await reset_live()
                         course = gameplay.master('music_course_master', 85)
@@ -417,7 +455,7 @@ async def main(name):
                                 assert sum(p[party_fields['score']] for p in parties) == own[fields['best_score']]
 
                     for case in (compatible_exports, effect_schedules, league_reentry,
-                                 claim_after_boundary, imported_rank_cap, failed_rating,
+                                 claim_after_boundary, imported_rank_cap, failed_rating, normal_stamina_fallback,
                                  alternate_course, closed_league, rank_up_stamina, weekly_rewards,
                                  league_master_and_difficulties):
                         tx = conn.transaction()

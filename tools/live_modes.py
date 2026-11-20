@@ -1,5 +1,8 @@
 """Master-driven Anthology and audition progression, serialized with live results."""
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
+import time
+
 from fastapi import APIRouter, Request
 from gameplay import State, Rejected, master, transaction
 from helpers.cache import cache
@@ -7,12 +10,35 @@ from helpers.msgpack import respond, read_request, from_array, fault
 from helpers.live import build_live_time_event
 from helpers.live_result import play_totals
 from helpers.score import verify_score_blocks
+from helpers.stamina import effective_stamina, max_stamina
 from live_parity import reset_auto_play, set_auto_play
 from models import StartLivePayload, FinishLivePayload, FinishLiveResult, ConcertResult
 from routes import lives as upstream
 from scripts._sirius import _unpack_all, _decompress
 
 router = APIRouter()
+_start_cost = ContextVar('live_start_stamina_cost', default=None)
+_vendor_stamina_cost = upstream._stamina_cost
+
+
+def _stamina_cost(live_master_id, ratio):
+    cost = _start_cost.get()
+    return _vendor_stamina_cost(live_master_id, ratio) if cost is None else cost
+
+
+async def affordable_stamina_cost(s, music, ratio):
+    base = music.stamina_consumption
+    if music.is_long_version or base <= 0:
+        return 0
+    # Keep the balance stable until the vendor start route makes its atomic debit.
+    row = await s.conn.conn.fetchrow('SELECT "currentStamina","maxStaminaRestoredAt","playerRank" '
+                                    'FROM "user" WHERE "userId"=$1 FOR UPDATE', s.uid)
+    if row is None:
+        return 0
+    stamina = effective_stamina(row['currentStamina'], row['maxStaminaRestoredAt'],
+                                max_stamina(row['playerRank']), time.time_ns() // 1000)
+    return base * min(max(1, ratio), stamina // base)
+
 
 class BoundApp:
     def __init__(self, app, conn): self.app, self.conn = app, conn
@@ -52,7 +78,7 @@ async def start(request: Request):
         concert = request.url.path.endswith('StartConcert')
         window = None
         if getattr(p, 'league_master_id', None):
-            from leagues import begin, begin_free_run, end_free_run, window_for
+            from leagues import begin, ladder_stamina_cost, window_for
             window, mode, ident = window_for('league', p.league_master_id), 'league', p.league_master_id
             m = None
         else:
@@ -63,29 +89,33 @@ async def start(request: Request):
                 m and chart.music_master_id != m.music_master_id) or (
                 window and (chart.music_master_id != window.music or int(chart.difficulty) > window.difficulty)):
             raise Rejected('Invalid stage or chart')
+        music = master('music_master', chart.music_master_id)
+        if not music:
+            raise Rejected('Missing song')
         async with transaction(request) as s:
             if not await s.one('Party', id=p.party_id): raise Rejected('Missing party')
             if concert and not concert_available(m, {r['concertStageMasterId'] for r in await s.rows('ConcertStage')}):
                 raise Rejected('Stage is locked')
             from progression import daily, context, rules
             await daily(s)
+            cost = 0
             if window:
                 await begin(s, 'league', window)
+                cost = ladder_stamina_cost(music)
+            elif p.use_stamina:
+                cost = await affordable_stamina_cost(s, music, p.stamina_consumption_ratio)
+            # The vendor reads the original request again. Give its debit the chosen
+            # cost while preserving the payload and the rest of its live-start behavior.
+            price_token = _start_cost.set(cost)
             token = set_auto_play(p.is_auto_play)
-            # A ladder run is free to replay: the price the upstream route charges for it
-            # is held at nothing while it runs (leagues.ladder_stamina_cost), no matter
-            # what the payload's use_stamina asked for.
-            free = begin_free_run() if window else None
             try:
                 r = parts(await call_bound(request, s, upstream.lives_start))
             finally:
                 reset_auto_play(token)
-                if free is not None:
-                    end_free_run(free)
+                _start_cost.reset(price_token)
             await s.conn.conn.execute('UPDATE active_live SET "isAutoPlay"=$2 WHERE "userId"=$1', s.uid, bool(p.is_auto_play))
             active = await s.conn.conn.fetchrow('SELECT * FROM active_live WHERE "userId"=$1',s.uid)
-            music=master('music_master',chart.music_master_id)
-            spent=int(music.stamina_consumption)*max(1,p.stamina_consumption_ratio) if active['staminaSpent'] else 0
+            spent = cost if active['staminaSpent'] else 0
             xp=int(spent*rules()['rank_xp_per_stamina'])
             if spent:
                 # 消費スタミナ: the daily and weekly counters track the stamina this run
@@ -215,6 +245,7 @@ async def retire(request: Request):
         return await call_bound(request, s, upstream.lives_retire)
 
 def install(app):
+    upstream._stamina_cost = _stamina_cost
     previous = app.router.lifespan_context
     @asynccontextmanager
     async def lifespan(app):

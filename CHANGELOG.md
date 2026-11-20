@@ -11,11 +11,13 @@ pinned to `3cfca23267fb0f79d7336732db768e1510f20313`.
 [TeamOpenSirius/OpenSiriusServer](https://github.com/TeamOpenSirius/OpenSiriusServer)
 was an independent protocol reference, not a second backend merged into this release.
 
-## November 21, 2026 — Lesson draws and stamina display
+## November 21, 2026 — Lesson draws and stamina
 
 - A valid manual result on the pending random song advances the draw in 稽古 as well as solo live.
 - Send the stamina recovery deadline on the client's JST clock so the display reflects the
   actual debit and recovery. The database still tracks elapsed time from the UTC deadline.
+- If the requested stamina multiplier is unaffordable, spend the largest whole multiplier
+  that fits after natural recovery. Rank XP and stamina missions use the amount actually paid.
 
 ## November 20, 2026 — One-song random challenge
 
