@@ -19,6 +19,7 @@ from song_challenge import draw
 
 TABLE = 'preservation_ghost_match'
 LABEL = 'ローカル対抗'
+_MAX_SCORE = (1 << 63) - 1  # The client reads GhostUserScore as a signed long.
 router = APIRouter()
 
 
@@ -104,7 +105,19 @@ async def begin(s, payload, chart):
     return stage, {'ghost_seed': pending['seed']}
 
 
-async def finish(s, context, active, play, result):
+def rival_display_score(player_score: int, player_rate: int, rival_rate: int) -> int:
+    """Convert the opponent's achievement rate to the player's score scale."""
+    scaled = (player_score * rival_rate + player_rate // 2) // player_rate if player_rate else player_score
+    # Keep a lead visible when rounding would give both players the same integer.
+    if rival_rate > player_rate:
+        scaled = max(scaled, player_score + 1)
+    elif rival_rate < player_rate:
+        scaled = min(scaled, player_score - 1)
+    return min(_MAX_SCORE, max(0, scaled))
+
+
+async def finish(s, context, active, play, result) -> int:
+    """Settle the battle and return the locked rival achievement for play history."""
     pending = await current(s)
     if (play is None or active['isAutoPlay'] or not pending or pending['ghostMasterId'] != context['masterId']
             or pending['seed'] != context['extra'].get('ghost_seed')):
@@ -113,18 +126,25 @@ async def finish(s, context, active, play, result):
     if key not in pending['targets']:
         raise Rejected('Missing rival target for this chart')
     target = pending['targets'][key]
-    if not play.cleared or play.points < target:
+    player_rate = play.points
+    if not play.cleared or player_rate < target:
         outcome = MatchingResult.Lose
-    elif play.points == target:
+    elif player_rate == target:
         outcome = MatchingResult.Draw
     else:
         outcome = MatchingResult.Win
     wins = pending['wins'] + int(outcome == MatchingResult.Win)
     profile, _ = opponent(pending['seed'], target)
-    result.ghost_live_result = GhostLiveResult(ghost_user_profile=profile, ghost_user_score=target,
-        total_battle_win_count=wins, matching_result=outcome, display_character_master_id=profile.main_m_character_id)
+    result.ghost_live_result = GhostLiveResult(
+        ghost_user_profile=profile,
+        ghost_user_score=rival_display_score(play.score, player_rate, target),
+        total_battle_win_count=wins,
+        matching_result=outcome,
+        display_character_master_id=profile.main_m_character_id,
+    )
     await s.conn.conn.execute(f'''UPDATE {TABLE} SET "ghostMasterId"=NULL,targets='{{}}'::jsonb,wins=$2
         WHERE "userId"=$1''', s.uid, wins)
+    return target
 
 
 def install(app):

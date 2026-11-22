@@ -26,9 +26,16 @@ async def main(name):
     from helpers.cache import cache
     from helpers.mastermemory import unpack
     from helpers.msgpack import from_array, pack, to_wire
-    from models import FinishAnotherNotationLivePayload, FinishLivePayload, StartLessonPayload, StartLivePayload
+    from models import (FinishAnotherNotationLivePayload, FinishLivePayload, SenseScoreBlock,
+                        StartLessonPayload, StartLivePayload)
     from models.enums import MatchingResult, TimingTypes
     from protocol import expand, unpack_stream
+
+    assert ghost_live.rival_display_score(2_400_000, 999_375, 999_231) == 2_399_654
+    assert ghost_live.rival_display_score(2_020, 1_010_000, 1_009_999) == 2_019
+    assert ghost_live.rival_display_score(2_020, 1_000_000, 1_000_001) == 2_021
+    assert ghost_live.rival_display_score(0, 0, 0) == 0
+    assert ghost_live.rival_display_score(0, 0, 990_000) == 1
 
     app = serve.app
     async with app.router.lifespan_context(app):
@@ -141,10 +148,11 @@ async def main(name):
 
             def outcome(result, rival, target, expected, wins):
                 ghost = result.ghost_live_result
-                assert ghost.matching_result == expected and ghost.ghost_user_score == target
+                assert ghost.matching_result == expected
                 assert ghost.total_battle_win_count == wins
                 assert ghost.ghost_user_profile.user_id == rival.ghost_user_profile.user_id
                 assert ghost.ghost_user_profile.user_name.endswith(f'{target / play_history.RATE_SCALE:.4f}%')
+                return ghost.ghost_user_score
 
             async def plays(chart):
                 async with app.acquire_db() as c:
@@ -157,23 +165,29 @@ async def main(name):
             target = locked['targets'][str(charts[4].id_)]
             expected = MatchingResult.Win if target < 1010000 else MatchingResult.Draw
             wins = int(expected == MatchingResult.Win)
-            outcome(next(result for result in results if result), first, target, expected, wins)
+            display_score = outcome(next(result for result in results if result), first, target, expected, wins)
+            assert abs(display_score - 2020 * target / 1010000) <= 1
+            assert (display_score < 2020) == (expected == MatchingResult.Win)
             after = await pending()
             assert after['ghostMasterId'] is None and after['wins'] == wins
             assert await plays(charts[4]) == before + 1
 
-            for fixed, life, expected in ((1010000, 1, MatchingResult.Draw), (990000, 0, MatchingResult.Lose),
-                                          (1010000, 1, MatchingResult.Lose)):
+            strong_party = finish_payload(TimingTypes.PERFECT)
+            strong_party.sense_score_blocks = [SenseScoreBlock(score=2_397_980, hash=2_397_980)]
+            for fixed, payload, expected, displayed in (
+                (1010000, good, MatchingResult.Draw, 2020),
+                (990000, finish_payload(TimingTypes.PERFECT_STAR, life=0), MatchingResult.Lose, 1980),
+                (1010000, strong_party, MatchingResult.Lose, 2_424_000),
+            ):
                 with patch.object(ghost_live, 'draw', return_value=music):
                     repeated = await match()
                 assert repeated.ghost_live_master_id == first.ghost_live_master_id
                 with patch.object(ghost_rating, 'target', return_value=fixed):
                     await start(charts[5])
-                timing = TimingTypes.PERFECT if fixed == 1010000 and expected == MatchingResult.Lose else TimingTypes.PERFECT_STAR
-                result = await post(finish, finish_payload(timing, life=life), model='FinishLiveResult')
-                outcome(result, repeated, fixed, expected, wins)
+                result = await post(finish, payload, model='FinishLiveResult')
+                assert outcome(result, repeated, fixed, expected, wins) == displayed
                 assert (await pending())['ghostMasterId'] is None and (await pending())['wins'] == wins
-            print('PASS: achievement-rate win, draw, loss and life depletion settle once, and the next draw can repeat a song')
+            print('PASS: wins use achievement rate, while rival display scores scale to the full player score')
 
             chart = charts[4]
             await post('Start', StartLivePayload(party_id=party, live_master_id=chart.id_, is_auto_play=True))

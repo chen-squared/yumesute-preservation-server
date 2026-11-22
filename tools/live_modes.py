@@ -230,6 +230,7 @@ async def settle(request: Request, p, *, another_notation_master_id=None):
             if r[0]: raise Rejected('Live validation failed')
             result = from_array('FinishLiveResult', r[1])
             play = play_history.summarize(p)
+            rival_achievement = None
             if context:
                 score, cleared = (play.score, play.cleared) if play else play_totals(p)
                 if context['mode'] in ('concert','audition'):
@@ -241,14 +242,14 @@ async def settle(request: Request, p, *, another_notation_master_id=None):
                     await score_ladder(s, context, active, p, result)
                 if context['mode'] == 'ghost':
                     import ghost_live
-                    await ghost_live.finish(s, context, active, play, result)
+                    rival_achievement = await ghost_live.finish(s, context, active, play, result)
                 from progression import finish_context
                 await finish_context(s,context,p,result)
                 import song_challenge
                 await song_challenge.finish(s, context, active, p)
             await play_history.record(s, active['liveMasterId'], context['mode'] if context else 'normal',
                                       play, auto=active['isAutoPlay'], alternate=alternate or 0,
-                                      rival=result.ghost_live_result.ghost_user_score if result.ghost_live_result else None)
+                                      rival=rival_achievement)
             await s.conn.conn.execute('DELETE FROM preservation_live_context WHERE "userId"=$1', s.uid)
             changed = s.present()
             keys = {(v[0],v[1][0]) for v in changed}
