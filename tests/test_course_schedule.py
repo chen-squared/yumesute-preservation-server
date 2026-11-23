@@ -298,8 +298,9 @@ class GeneratedEditions(unittest.TestCase):
         self.assertEqual(len(cache.course_ranking_reward_master), bands_before)
         # The generated editions are in the cache the routes read.
         ids = {row.id_ for row in cache.music_course_master}
-        self.assertTrue(all(row.id in ids for row in schedule.generated()))
-        self.assertEqual(len(schedule.live()), 2)
+        generated = schedule.generated()
+        self.assertTrue(all(row.id in ids for row in generated))
+        self.assertEqual(len(schedule.live(generated[0].start)), 2)
 
 
 class WeeklyRanking(unittest.TestCase):
