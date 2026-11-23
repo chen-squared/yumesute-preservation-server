@@ -284,6 +284,8 @@ async def finish_another_notation(request: Request):
                 rate_result=RateResult(
                     achievement_rate_result=RateUpdateResult(
                         best_ever=round(run['prev_rate'], 4), this_time=round(run['rate'], 4)),
+                    # OnGameResult reads both updates whenever RateResult is present.
+                    live_rate_result=RateUpdateResult(),
                     # an alternate run is not part of the live-rate total, so it reports the
                     # player's rate unchanged rather than pretending to move it
                     total_rate_before=total_rate,

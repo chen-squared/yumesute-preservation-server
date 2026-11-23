@@ -236,6 +236,9 @@ async def main():
         assert result.is_high_score
         figures = result.rate_result.achievement_rate_result
         assert (float(figures.best_ever), float(figures.this_time)) == (0.0, 101.0), figures
+        notation_rate = result.rate_result.live_rate_result
+        assert notation_rate is not None, 'The game result presenter requires both rate updates'
+        assert (notation_rate.best_ever, notation_rate.this_time) == (0.0, 0.0)
         assert (float(result.rate_result.total_rate_before),
                 float(result.rate_result.total_rate_after)) == (before[4][0], before[4][0])
         assert await state_of('SELECT 1 FROM active_live WHERE "userId"=$1', ACCOUNT) is None, \
