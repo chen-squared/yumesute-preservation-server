@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+from datetime import datetime
 from random import Random
 from statistics import median
 from unittest.mock import patch
@@ -26,6 +27,7 @@ async def main(name):
     from helpers.cache import cache
     from helpers.mastermemory import unpack
     from helpers.msgpack import from_array, pack, to_wire
+    from league_schedule import JST
     from models import (FinishAnotherNotationLivePayload, FinishLivePayload, SenseScoreBlock,
                         StartLessonPayload, StartLivePayload)
     from models.enums import MatchingResult, TimingTypes
@@ -127,13 +129,15 @@ async def main(name):
             await start(next(chart for chart in cache.live_master if chart.music_master_id != music), valid=False)
             await start(charts[4], is_auto_play=True, valid=False)
             assert await pending() == initial
-            for diff, chart in charts.items():
-                opened = await start(chart)
-                assert opened.actors and opened.time_events, diff
-                await post('Retire')
-                assert await match() == first
+            with patch.object(ghost_live, 'PAST_SELF_CHANCE', 1.0):
+                for diff, chart in charts.items():
+                    opened = await start(chart)
+                    assert opened.actors and opened.time_events, diff
+                    await post('Retire')
+                    assert await match() == first
             locked = await pending()
             assert set(locked['targets']) == {str(chart.id_) for chart in charts.values()}
+            assert all(isinstance(target, int) for target in locked['targets'].values())
             await start(charts[4])
             assert await pending() == locked
             await post(finish, FinishLivePayload(), valid=False)
@@ -182,7 +186,7 @@ async def main(name):
                 with patch.object(ghost_live, 'draw', return_value=music):
                     repeated = await match()
                 assert repeated.ghost_live_master_id == first.ghost_live_master_id
-                with patch.object(ghost_rating, 'target', return_value=fixed):
+                with patch.object(ghost_live, 'PAST_SELF_CHANCE', 0.0), patch.object(ghost_rating, 'target', return_value=fixed):
                     await start(charts[5])
                 result = await post(finish, payload, model='FinishLiveResult')
                 assert outcome(result, repeated, fixed, expected, wins) == displayed
@@ -227,6 +231,38 @@ async def main(name):
             assert len(rows) == 2 * play_history.PER_CHART + 1
             assert all(row['maxCombo'] == 1000 for row in rows if not row['anotherNotationMasterId'])
             print('PASS: normal, lesson, alternate and battle samples persist, rotate per chart, and calibrate each difficulty separately')
+
+            past_chart = charts[2]
+            await post('Start', StartLivePayload(party_id=party, live_master_id=past_chart.id_))
+            await post(finish, finish_payload(TimingTypes.PERFECT))
+            past = (await history())[-1]
+            assert past['achievement'] == 1_000_000 and past['liveMasterId'] == past_chart.id_
+            async with app.acquire_db() as c:
+                s = State(c, uid)
+                await play_history.record(s, past_chart.id_, 'normal', play_history.summarize(good), auto=True)
+                failed = play_history.summarize(finish_payload(TimingTypes.GREAT, life=0))
+                await play_history.record(s, past_chart.id_, 'normal', failed)
+
+            with patch.object(ghost_live, 'draw', return_value=music):
+                secret_match = await match()
+            assert secret_match.ghost_user_profile.user_name.startswith(ghost_live.LABEL)
+            with patch.object(ghost_live, 'PAST_SELF_CHANCE', 1.0), patch.object(ghost_rating, 'target') as simulated:
+                await start(past_chart)
+            simulated.assert_not_called()
+            saved_target = {'achievement': past['achievement'], 'finishedAt': past['finishedAt']}
+            assert (await pending())['targets'][str(past_chart.id_)] == saved_target
+            await post('Retire')
+            assert await match() == secret_match
+            with patch.object(ghost_live, 'PAST_SELF_CHANCE', 0.0), patch.object(ghost_rating, 'target') as simulated:
+                await start(past_chart)
+            simulated.assert_not_called()
+            result = await post(finish, good, model='FinishLiveResult')
+            score = outcome(result, secret_match, past['achievement'], MatchingResult.Win, wins + 1)
+            assert score == 2000
+            day = datetime.fromtimestamp(past['finishedAt'] / 1_000_000, JST).strftime('%m/%d')
+            assert result.ghost_live_result.ghost_user_profile.user_name == f'過去の自分 {day} 100.0000%'
+            assert (await history())[-1]['rivalAchievement'] == past['achievement']
+            print('PASS: a same-chart manual clear can be locked as a hidden rival and revealed only at settlement')
 
 
 if __name__ == '__main__':

@@ -120,9 +120,10 @@ Every song in the pool has equal odds each time, so immediate repeats are possib
 Choose your difficulty on the song screen.
 
 Retiring, retrying or logging in again keeps the same song and rival. A manual result
-unlocks the next draw. Running out of life counts as a loss. The rival's target is set
-before play based on recent manual clears, your saved best and comparable charts.
-Results compare achievement rates to four decimal places and show the rival's percentage.
+unlocks the next draw. Running out of life counts as a loss. If you have a recent manual
+clear on the selected chart, a match has a 25% chance of using one of your own past
+results. The results screen reveals the past run and its date. Other matches use a
+simulated rival. Results compare achievement rates to four decimal places.
 
 Settled runs across the supported modes keep judgment counts, max combo, score, clear
 status and other run details in the existing database. Each standard or

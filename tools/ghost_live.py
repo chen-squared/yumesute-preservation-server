@@ -1,6 +1,7 @@
 """Local Ghost Live matching. The song and the opponent persist until settlement."""
 
 from contextlib import asynccontextmanager
+from datetime import datetime
 from random import Random
 from secrets import randbits
 
@@ -13,12 +14,15 @@ from models.enums import MatchingResult
 
 import ghost_rating
 import ghost_schedule
-from play_history import RATE_SCALE
+from league_schedule import JST
+from play_history import PER_CHART, RATE_SCALE, recent_clears
 from song_challenge import draw
 
 
 TABLE = 'preservation_ghost_match'
 LABEL = 'ローカル対抗'
+PAST_SELF_LABEL = '過去の自分'
+PAST_SELF_CHANCE = 0.25
 _MAX_SCORE = (1 << 63) - 1  # The client reads GhostUserScore as a signed long.
 router = APIRouter()
 
@@ -36,7 +40,7 @@ async def current(s):
     return await s.conn.conn.fetchrow(f'SELECT * FROM {TABLE} WHERE "userId"=$1', s.uid)
 
 
-def opponent(seed, points=None):
+def opponent(seed, points=None, *, played_at=None):
     rng = Random(seed)
     # Starter actor cards are already used by the client itself, including the home icon
     # and the party inspection panel. Use real, distinct card IDs for those lookups.
@@ -47,7 +51,11 @@ def opponent(seed, points=None):
                              current_status_vocal=800, current_status_expression=800,
                              current_status_concentration=800)
              for i, card in enumerate(cards, start=1)]
-    name = f'{LABEL} {seed % 100:02d}' if points is None else f'{LABEL} {points / RATE_SCALE:.4f}%'
+    label = LABEL
+    if played_at is not None:
+        played = datetime.fromtimestamp(played_at / 1_000_000, JST)
+        label = f'{PAST_SELF_LABEL} {played:%m/%d}'
+    name = f'{label} {seed % 100:02d}' if points is None else f'{label} {points / RATE_SCALE:.4f}%'
     profile = UserProfileDetail(user_id=f'local-ghost-{seed}', user_name=name,
                                 main_m_character_id=cards[0].id_, main_character_level=level)
     return profile, GhostLiveInfo(leader_position=1, party_slot=slots)
@@ -88,6 +96,17 @@ async def match(request: Request):
         return respond(MatchingGhostLiveResult(), faults=[fault('InvalidLiveState', str(exc))])
 
 
+async def choose_target(s, chart, seed):
+    # One hidden chance per match, even if the player retries on another difficulty.
+    history_rng = Random(f'{seed}:past-self')
+    if history_rng.random() < PAST_SELF_CHANCE:
+        plays = await recent_clears(s, [chart.id_], PER_CHART)
+        if plays:
+            past = history_rng.choice(plays)
+            return {'achievement': past['achievement'], 'finishedAt': past['finishedAt']}
+    return await ghost_rating.target(s, chart, Random(f'{seed}:{chart.id_}'))
+
+
 async def begin(s, payload, chart):
     pending = await current(s)
     if not pending or not pending['ghostMasterId'] or pending['ghostMasterId'] != payload.ghost_live_master_id:
@@ -99,8 +118,7 @@ async def begin(s, payload, chart):
     key = str(chart.id_)
     targets = dict(pending['targets'])
     if key not in targets:
-        rng = Random(f"{pending['seed']}:{chart.id_}")
-        targets[key] = await ghost_rating.target(s, chart, rng)
+        targets[key] = await choose_target(s, chart, pending['seed'])
         await s.conn.conn.execute(f'UPDATE {TABLE} SET targets=$2 WHERE "userId"=$1', s.uid, targets)
     return stage, {'ghost_seed': pending['seed']}
 
@@ -125,7 +143,12 @@ async def finish(s, context, active, play, result) -> int:
     key = str(active['liveMasterId'])
     if key not in pending['targets']:
         raise Rejected('Missing rival target for this chart')
-    target = pending['targets'][key]
+    rival = pending['targets'][key]
+    # Existing matches and simulated opponents have a bare integer target.
+    if isinstance(rival, dict):
+        target, played_at = rival['achievement'], rival['finishedAt']
+    else:
+        target, played_at = rival, None
     player_rate = play.points
     if not play.cleared or player_rate < target:
         outcome = MatchingResult.Lose
@@ -134,7 +157,7 @@ async def finish(s, context, active, play, result) -> int:
     else:
         outcome = MatchingResult.Win
     wins = pending['wins'] + int(outcome == MatchingResult.Win)
-    profile, _ = opponent(pending['seed'], target)
+    profile, _ = opponent(pending['seed'], target, played_at=played_at)
     result.ghost_live_result = GhostLiveResult(
         ghost_user_profile=profile,
         ghost_user_score=rival_display_score(play.score, player_rate, target),

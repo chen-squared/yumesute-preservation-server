@@ -87,6 +87,6 @@ async def record(s, live_id, mode, play, *, auto=False, alternate=0, rival=None)
 
 
 async def recent_clears(s, live_ids, limit):
-    return await s.conn.conn.fetch(f'''SELECT "liveMasterId",achievement,judgments FROM {TABLE}
+    return await s.conn.conn.fetch(f'''SELECT "liveMasterId",achievement,judgments,"finishedAt" FROM {TABLE}
         WHERE "userId"=$1 AND "liveMasterId"=ANY($2::bigint[]) AND "anotherNotationMasterId"=0
         AND cleared AND NOT "isAutoPlay" ORDER BY id DESC LIMIT $3''', s.uid, live_ids, limit)
